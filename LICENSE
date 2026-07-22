@@ -1,0 +1,21 @@
+Elastic License 2.0 (ELv2)
+
+Copyright (c) 2026 Mneurix / akketix.
+
+This software is licensed under the Elastic License 2.0 (ELv2) — a
+"fair-code", source-available, commercial license. You may use, copy,
+modify, and self-host this software (including for internal business use
+and for offering it to your own learners/students), subject to the
+restrictions below. You may NOT, without an explicit commercial license
+from the rights holder:
+
+  1. offer this software (or a modified version) as a managed service or
+     hosted product to third parties; or
+  2. remove or circumvent any license key, metering, or usage-tracking
+     mechanism in the software.
+
+The complete, canonical Elastic License 2.0 text is at:
+  https://www.elastic.co/licensing/elastic-license
+
+TODO(M0): paste the canonical ELv2 text above verbatim before any public
+release. This file is a placeholder summary; the canonical text governs.

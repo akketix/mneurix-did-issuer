@@ -1,0 +1,24 @@
+# mneurix-did-issuer — do overlay. Self-host / local install is the primary offer.
+services:
+  did-issuer:
+    build: .
+    image: mneurix-did-issuer
+    env_file: .env.do
+    environment:
+      # MNEURIX_ENV set via .env.do
+      DID_ISSUER_PORT: 7004
+    ports:
+      - "127.0.0.1:7004:7004"
+    volumes:
+      - keys:/app/data/keys
+      
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m
+    pids_limit: 256
+    restart: unless-stopped
+volumes:
+  keys:

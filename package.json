@@ -1,0 +1,24 @@
+{
+	"name": "@akketix/did-issuer",
+	"version": "0.0.1",
+	"private": true,
+	"type": "module",
+	"engines": {
+		"node": ">=20"
+	},
+	"workspaces": [
+		"packages/*",
+		"services/*"
+	],
+	"scripts": {
+		"build": "tsc -b",
+		"typecheck": "tsc -b --noEmit",
+		"test": "tsx test/smoke.test.ts",
+		"smoke": "tsx test/smoke.test.ts"
+	},
+	"devDependencies": {
+		"@types/node": "^22.0.0",
+		"tsx": "^4.19.0",
+		"typescript": "^5.6.0"
+	}
+}
