@@ -9,6 +9,9 @@
 		},
 		{
 			"path": "services/did-issuer"
+		},
+		{
+			"path": "packages/sdk"
 		}
 	]
 }
