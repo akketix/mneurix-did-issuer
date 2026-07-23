@@ -6,7 +6,7 @@
  * M3 resolves from the local store.
  *
  * Purity: node:crypto (createPublicKey for PEM->JWK). */
-import { createPublicKey } from "node:crypto";
+import { createHash, createPublicKey } from "node:crypto";
 
 export interface DidDocument {
 	"@context": string[];
@@ -18,6 +18,10 @@ export interface DidDocument {
 		publicKeyJwk: Record<string, string>;
 	}[];
 	assertionMethod: string[];
+	/** URIs identifying the same subject (DID Core §4.1). M4 lists mirror origins here. */
+	alsoKnownAs?: string[];
+	/** Transport-only list of origin URLs that serve this document (M4 resilience). */
+	"x-mneurix-did-origins"?: string[];
 }
 
 export function didFor(origin: string): string {
@@ -37,4 +41,24 @@ export function buildDidDocument(origin: string, kid: string, publicKeyJwk: Reco
 		verificationMethod: [{ id: vmId, type: "JsonWebKey", controller: did, publicKeyJwk }],
 		assertionMethod: [vmId],
 	};
+}
+
+/** JCS-inspired deterministic canonicalization (RFC 8785-shaped): recursively
+ * sort object keys, preserve array order, no insignificant whitespace. Full
+ * RFC 8785 number/unicode edge cases are a future hardening; DID documents are
+ * strings + arrays + nested objects, so this is byte-stable for hash pinning. */
+export function canonicalDocBytes(value: unknown): string {
+	if (value === null) return "null";
+	if (Array.isArray(value)) return "[" + value.map(canonicalDocBytes).join(",") + "]";
+	if (typeof value === "object") {
+		const obj = value as Record<string, unknown>;
+		return "{" + Object.keys(obj).sort().map((k) => JSON.stringify(k) + ":" + canonicalDocBytes(obj[k])).join(",") + "}";
+	}
+	return JSON.stringify(value);
+}
+
+/** SHA-256 over the canonical document bytes — the pinned doc hash used by the
+ * M4 fan-out/quorum resolver to detect byte-level disagreement between origins. */
+export function didHash(document: DidDocument): string {
+	return createHash("sha256").update(canonicalDocBytes(document)).digest("hex");
 }
