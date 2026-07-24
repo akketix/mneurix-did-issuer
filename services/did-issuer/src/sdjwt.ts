@@ -128,7 +128,8 @@ export async function issueSdJwtVc(input: SdJwtIssueInput, keys: KeyMaterial): P
 	if (input.holderJwk) payload.cnf = { jwk: input.holderJwk };
 	if (input.status) payload.status = input.status;
 
-	const header = { alg: "EdDSA", typ: "dc+sd-jwt", kid: input.verificationMethod };
+	const headerKid = input.verificationMethod.includes("#") ? input.verificationMethod.slice(input.verificationMethod.lastIndexOf("#") + 1) : input.verificationMethod;
+	const header = { alg: "EdDSA", typ: "dc+sd-jwt", kid: headerKid };
 	const headerB64 = b64url(JSON.stringify(header));
 	const payloadB64 = b64url(JSON.stringify(payload));
 	const signingInput = Buffer.from(`${headerB64}.${payloadB64}`, "ascii");

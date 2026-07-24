@@ -4,8 +4,8 @@ import { pathToFileURL } from "node:url";
 import { requireServiceToken } from "./serviceAuth";
 import { jsonError } from "./errors";
 import { openApiDoc } from "./openapi";
-import { buildDidDocument, didFor, didHash, publicKeyJwkFromPem } from "./did";
-import { loadOrCreateIssuerKey } from "./keys";
+import { buildDidDocument, buildDidDocumentMulti, originFromDid, didFor, didHash, publicKeyJwkFromPem, type DidMethod } from "./did";
+import { loadOrCreateIssuerKey, rotateIssuerKey, getKeyByKid, knownKids } from "./keys";
 import { putDid, getDid, setPublished } from "./store";
 import { loadOriginsFromEnv, originListFromUrls } from "./origins";
 import { resolveDid } from "./resolve";
@@ -13,7 +13,10 @@ import { publishDid } from "./publish";
 import { randomUUID } from "node:crypto";
 import { issueOb3 } from "./vc-issue";
 import { issueSdJwtVc } from "./sdjwt";
-import { allocateOb3Status, allocateSdJwtStatus } from "./status";
+import { allocateOb3Status, allocateSdJwtStatus, getCredentialStatus } from "./status";
+import { revokeKid } from "./revoked-kids";
+import { requireOperator } from "./operatorAuth";
+import { verifyPresentation } from "./vc-verify";
 import type { Achievement, BadgeEvidence } from "@mneurix/shared";
 
 const SERVICE_TOKEN =
@@ -28,11 +31,13 @@ if (
 }
 
 const ISSUER_ORIGIN = process.env.MNEURIX_DID_ISSUER_ORIGIN ?? "did-issuer.mneurix.example";
-const issuerKey = loadOrCreateIssuerKey(process.env.MNEURIX_KEY_DIR);
+let issuerKey = loadOrCreateIssuerKey(process.env.MNEURIX_KEY_DIR);
 const ISSUER_URL = (process.env.MNEURIX_DID_ISSUER_URL ?? "https://did-issuer.mneurix.example").replace(/\/+$/, "");
 const ISSUER_NAME = process.env.MNEURIX_ISSUER_NAME ?? "Mneurix";
 const issuerDid = didFor(ISSUER_ORIGIN);
-const verificationMethod = `${issuerDid}#${issuerKey.kid}`;
+function currentVerificationMethod(): string {
+	return `${issuerDid}#${issuerKey.kid}`;
+}
 
 function mintFor(origin: string): { did: string; document: ReturnType<typeof buildDidDocument> } {
 	const jwk = publicKeyJwkFromPem(issuerKey.publicKeyPem);
@@ -91,14 +96,99 @@ v1.get("/dids/:did", async (c) => {
 	return c.json({ did, document: result.document, resolvedFrom: result.resolvedFrom, docHash: result.docHash, verified: result.verified, mismatches: result.mismatches });
 });
 
-// The remaining v1 endpoints (presentations:verify, keys:rotate/revoke,
-// credentials status) stay stubbed until M6. VC issue + publish are live (M5/M4).
-const notImpl = (path: string) => (c: import("hono").Context) =>
-	jsonError(c, 501, "NOT_IMPLEMENTED", path + " is declared in the v1 contract but not implemented in this milestone (see M6).");
-v1.post("/presentations:verify", notImpl("/v1/presentations:verify"));
-v1.post("/dids/:did/keys:rotate", notImpl("/v1/dids/:did/keys:rotate"));
-v1.post("/dids/:did/keys:revoke", notImpl("/v1/dids/:did/keys:revoke"));
-v1.get("/credentials/:id/status", notImpl("/v1/credentials/:id/status"));
+// M6: rotate / revoke / verify / status are live; no v1 stubs remain.
+
+// POST /v1/dids/:did/keys:rotate — mint a new assertion key; republish the DID
+// doc with old (tombstoned) + new verificationMethod; tombstone the old kid.
+// The DID stays stable; the new key signs all subsequent VCs (operator-auth).
+v1.post("/dids/:did/keys:rotate", requireOperator(["issuer", "revoker"]), async (c) => {
+	const did = c.req.param("did");
+	const stored = getDid(did);
+	if (!stored) return jsonError(c, 404, "DID_NOT_FOUND", did + " is not in the local store (mint it first)");
+	const oldKid = stored.kid;
+	const oldKey = issuerKey;
+	const newKey = rotateIssuerKey(oldKey);
+	const origin = originFromDid(did);
+	const methods: DidMethod[] = [
+		{ kid: oldKid, publicKeyJwk: publicKeyJwkFromPem(oldKey.publicKeyPem) },
+		{ kid: newKey.kid, publicKeyJwk: publicKeyJwkFromPem(newKey.publicKeyPem) },
+	];
+	const document = buildDidDocumentMulti(origin, methods, [newKey.kid]);
+
+	// Atomic multi-origin republish (if origins are configured).
+	const originList = stored.origins && stored.origins.length > 0 ? originListFromUrls(stored.origins) : loadOriginsFromEnv();
+	let publishedTo: string[] = [];
+	if (originList.origins.length > 0) {
+		const pub = await publishDid(originList, did, document);
+		if (!pub.staged) return jsonError(c, 503, "PUBLISH_QUORUM_FAILED", `rotate publish failed quorum (${pub.confirmed}/${originList.origins.length})`, pub);
+		publishedTo = pub.publishedTo;
+	}
+
+	// Tombstone the old kid (signed by the NEW key) + flip the module issuer key.
+	await revokeKid(oldKid, newKey, `${did}#${newKey.kid}`);
+	issuerKey = newKey;
+	putDid(did, document, newKey.kid);
+	if (publishedTo.length > 0) setPublished(did, publishedTo, didHash(document));
+	return c.json({ did, newKid: newKey.kid, tombstonedKid: oldKid, publishedTo, docHash: didHash(document) });
+});
+
+// POST /v1/dids/:did/keys:revoke — tombstone a kid + remove it from the DID doc;
+// republish atomically (operator-auth). Body: { kid?: string } (defaults to current).
+v1.post("/dids/:did/keys:revoke", requireOperator(["revoker"]), async (c) => {
+	const did = c.req.param("did");
+	const stored = getDid(did);
+	if (!stored) return jsonError(c, 404, "DID_NOT_FOUND", did + " is not in the local store (mint it first)");
+	const body = (await c.req.json().catch(() => ({}))) as { kid?: string };
+	const kid = body.kid ?? stored.kid;
+	await revokeKid(kid, issuerKey, currentVerificationMethod());
+
+	// Rebuild the doc WITHOUT the revoked kid.
+	const origin = originFromDid(did);
+	const remaining: DidMethod[] = stored.document.verificationMethod
+		.filter((vm) => vm.id !== `${did}#${kid}`)
+		.map((vm) => ({ kid: vm.id.split("#")[1]!, publicKeyJwk: vm.publicKeyJwk }));
+	const assertionKids = remaining.map((m) => m.kid);
+	const document = remaining.length > 0 ? buildDidDocumentMulti(origin, remaining, assertionKids) : buildDidDocumentMulti(origin, [], []);
+
+	const originList = stored.origins && stored.origins.length > 0 ? originListFromUrls(stored.origins) : loadOriginsFromEnv();
+	let publishedTo: string[] = [];
+	if (originList.origins.length > 0) {
+		const pub = await publishDid(originList, did, document);
+		if (!pub.staged) return jsonError(c, 503, "PUBLISH_QUORUM_FAILED", `revoke publish failed quorum (${pub.confirmed}/${originList.origins.length})`, pub);
+		publishedTo = pub.publishedTo;
+	}
+	putDid(did, document, stored.kid);
+	if (publishedTo.length > 0) setPublished(did, publishedTo, didHash(document));
+	return c.json({ did, revokedKid: kid, publishedTo, docHash: didHash(document) });
+});
+
+// POST /v1/presentations:verify — verify an OB3 VC / SD-JWT VC / SD-JWT+KB,
+// fail-closed on a revoked signing key (F15 tombstone) or revoked status.
+v1.post("/presentations:verify", async (c) => {
+	const body = (await c.req.json().catch(() => null)) as {
+		presentation?: unknown;
+		requireKeyBinding?: boolean;
+		nonce?: string;
+		aud?: string;
+	} | null;
+	if (!body || body.presentation === undefined || body.presentation === null) {
+		return jsonError(c, 400, "BAD_REQUEST", "presentation is required");
+	}
+	const result = await verifyPresentation({
+		presentation: body.presentation as Parameters<typeof verifyPresentation>[0]["presentation"],
+		...(body.requireKeyBinding ? { requireKeyBinding: body.requireKeyBinding } : {}),
+		...(body.nonce ? { nonce: body.nonce } : {}),
+		...(body.aud ? { aud: body.aud } : {}),
+	});
+	return c.json(result);
+});
+
+// GET /v1/credentials/:id/status — credential revocation status (fail-closed).
+v1.get("/credentials/:id/status", (c) => {
+	const id = decodeURIComponent(c.req.param("id"));
+	const st = getCredentialStatus(id);
+	return c.json({ id, state: st.state, revoked: st.revoked, statusPurpose: st.statusPurpose, statusListIndex: st.statusListIndex });
+});
 
 // POST /v1/vcs:issue — issue a VC in one of two envelopes (M5):
 // data-integrity (OB3 ed25519-jcs-2020) or sd-jwt-vc (RFC 9901 SD-JWT VC, Ed25519-only).
@@ -124,9 +214,9 @@ v1.post("/vcs:issue", async (c) => {
 			return jsonError(c, 400, "BAD_REQUEST", "data-integrity issue requires achievement + evidence");
 		}
 		const credentialId = body.credentialId ?? `${ISSUER_URL}/credentials/${randomUUID()}`;
-		const credentialStatus = allocateOb3Status(statusListId);
+		const credentialStatus = allocateOb3Status(statusListId, "revocation", credentialId);
 		const issuer = { id: issuerDid, type: ["Profile"], name: ISSUER_NAME };
-		const credential = await issueOb3(body.subjectId, body.achievement, body.evidence, issuer, issuerKey, verificationMethod, credentialId, credentialStatus);
+		const credential = await issueOb3(body.subjectId, body.achievement, body.evidence, issuer, issuerKey, currentVerificationMethod(), credentialId, credentialStatus);
 		return c.json({ credential, format: "ob3", statusIndex: credentialStatus.statusListIndex }, 201);
 	}
 
@@ -135,7 +225,7 @@ v1.post("/vcs:issue", async (c) => {
 			return jsonError(c, 400, "BAD_REQUEST", "sd-jwt-vc issue requires vct + claims");
 		}
 		const selectivelyDisclosable = body.selectivelyDisclosable ?? [];
-		const status = allocateSdJwtStatus(statusListId);
+		const status = allocateSdJwtStatus(statusListId, "revocation", undefined);
 		const result = await issueSdJwtVc({
 			iss: issuerDid,
 			sub: body.subjectId,
@@ -144,7 +234,7 @@ v1.post("/vcs:issue", async (c) => {
 			selectivelyDisclosable,
 			...(body.holderJwk ? { holderJwk: body.holderJwk } : {}),
 			status,
-			verificationMethod,
+			verificationMethod: currentVerificationMethod(),
 		}, issuerKey);
 		return c.json({ credential: result.credential, format: "dc+sd-jwt", statusIndex: status.statusListIndex }, 201);
 	}

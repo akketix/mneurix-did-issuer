@@ -8,7 +8,7 @@
  * revoked (fail-closed), mirroring the lattice's `RevocationState`.
  *
  * Purity: none (in-memory Map); codec is pure. */
-import { setBit, type StatusPurpose } from "@mneurix/shared";
+import { setBit, getBit, type StatusPurpose } from "@mneurix/shared";
 
 /** The OB3 CredentialStatus entry shape (from the copied ob3.ts schema). */
 export interface Ob3CredentialStatus {
@@ -36,6 +36,11 @@ class StatusList {
 		this.bits = new Uint8Array(setBit(this.bits, index, 1));
 	}
 
+	/** Is the bit at `index` set to revoked (1)? */
+	isRevoked(index: number): boolean {
+		return getBit(this.bits, index) === 1;
+	}
+
 	get encodedList(): string {
 		// base64url of the raw bitstring (W3C spec expanded form; lattice uses raw).
 		return Buffer.from(this.bits).toString("base64url");
@@ -56,21 +61,52 @@ function listFor(purpose: StatusPurpose): StatusList {
 	return l;
 }
 
-/** Allocate a revocation status entry for an OB3 credential. */
+/** Allocate a revocation status entry for an OB3 credential. Optionally
+ * record the credential id → entry mapping for the status endpoint. */
 export function allocateOb3Status(
 	statusListId: string,
 	statusPurpose: StatusPurpose = "revocation",
+	credentialId?: string,
 ): Ob3CredentialStatus {
-	return listFor(statusPurpose).allocate(statusListId, statusPurpose);
+	const entry = listFor(statusPurpose).allocate(statusListId, statusPurpose);
+	if (credentialId) credentialStatus.set(credentialId, { ...entry, revoked: false });
+	return entry;
 }
 
 /** Build the SD-JWT VC `status` claim (Token Status List-shaped). */
 export function allocateSdJwtStatus(
 	statusListId: string,
 	statusPurpose: StatusPurpose = "revocation",
+	credentialId?: string,
 ): { id: string; type: string; statusPurpose: StatusPurpose; statusListIndex: number } {
-	const entry = allocateOb3Status(statusListId, statusPurpose);
+	const entry = allocateOb3Status(statusListId, statusPurpose, credentialId);
 	return { id: entry.id, type: "statuslist", statusPurpose: entry.statusPurpose, statusListIndex: entry.statusListIndex };
+}
+
+/** credential id → allocated status entry (for GET /credentials/:id/status). */
+const credentialStatus = new Map<string, Ob3CredentialStatus & { revoked: boolean }>();
+
+/** Look up the revocation state of a credential by id (fail-closed: unknown id
+ * → `unavailable`). */
+export function getCredentialStatus(credentialId: string): {
+	state: "valid" | "revoked" | "unavailable";
+	revoked: boolean;
+	statusPurpose?: StatusPurpose;
+	statusListIndex?: number;
+} {
+	const entry = credentialStatus.get(credentialId);
+	if (!entry) return { state: "unavailable", revoked: false };
+	const revoked = listFor(entry.statusPurpose).isRevoked(entry.statusListIndex);
+	return { state: revoked ? "revoked" : "valid", revoked, statusPurpose: entry.statusPurpose, statusListIndex: entry.statusListIndex };
+}
+
+/** Revoke a credential by id (flip its status bit; fail-closed). */
+export function revokeCredential(credentialId: string): boolean {
+	const entry = credentialStatus.get(credentialId);
+	if (!entry) return false;
+	listFor(entry.statusPurpose).revoke(entry.statusListIndex);
+	entry.revoked = true;
+	return true;
 }
 
 /** Revoke a previously-allocated index (fail-closed). */
@@ -80,4 +116,5 @@ export function revokeStatus(statusPurpose: StatusPurpose, index: number): void 
 
 export function _resetStatusForTests(): void {
 	lists.clear();
+	credentialStatus.clear();
 }

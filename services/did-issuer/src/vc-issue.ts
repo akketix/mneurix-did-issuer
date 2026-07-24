@@ -204,3 +204,64 @@ export async function issueOb3(
 	});
 	return signOb3({ unsigned, keys, verificationMethod });
 }
+
+// ---------------------------------------------------------------------------
+// Generic ed25519-jcs-2020 Data Integrity sign/verify (M6: revoked-kids tombstone)
+// Same algorithm as signOb3/verifyOb3 but schema-agnostic (no OB3 parse), so the
+// F15 RevokedIssuerKeys tombstone + future signed docs can reuse it.
+// ---------------------------------------------------------------------------
+
+export interface DataIntegrityProof {
+	type: "DataIntegrityProof";
+	cryptosuite: "ed25519-jcs-2020";
+	created: string;
+	verificationMethod: string;
+	proofPurpose: "assertionMethod";
+	proofValue: string;
+}
+
+export interface SignedDoc {
+	proof: DataIntegrityProof;
+}
+
+export async function signDataIntegrity<T extends Record<string, unknown>>(
+	doc: T,
+	keys: KeyMaterial,
+	verificationMethod: string,
+): Promise<T & SignedDoc> {
+	const { seed } = expandKey(keys);
+	if (!seed) throw new Error("signDataIntegrity: private key required for signing");
+	const proofOptions: Omit<DataIntegrityProof, "proofValue"> = {
+		type: "DataIntegrityProof",
+		cryptosuite: "ed25519-jcs-2020",
+		created: new Date().toISOString(),
+		verificationMethod,
+		proofPurpose: "assertionMethod",
+	};
+	const canonProof = canonicalize(proofOptions);
+	const canonDoc = canonicalize(doc);
+	if (!canonProof || !canonDoc) throw new Error("JCS canonicalization failed");
+	const verifyData = Buffer.concat([Buffer.from(canonProof, "utf8"), Buffer.from(canonDoc, "utf8")]);
+	const sig = await signAsync(verifyData, seed);
+	return { ...doc, proof: { ...proofOptions, proofValue: base58btc.encode(sig) } };
+}
+
+export async function verifyDataIntegrity<T extends SignedDoc>(signed: T, keys: KeyMaterial): Promise<boolean> {
+	const { proof } = signed;
+	if (proof.type !== "DataIntegrityProof" || proof.cryptosuite !== "ed25519-jcs-2020") return false;
+	const { publicKey } = expandKey(keys);
+	const { proof: _drop, ...docWithoutProof } = signed as Record<string, unknown>;
+	const proofOptions: Omit<DataIntegrityProof, "proofValue"> = {
+		type: proof.type,
+		cryptosuite: proof.cryptosuite,
+		created: proof.created,
+		verificationMethod: proof.verificationMethod,
+		proofPurpose: proof.proofPurpose,
+	};
+	const canonProof = canonicalize(proofOptions);
+	const canonDoc = canonicalize(docWithoutProof);
+	if (!canonProof || !canonDoc) return false;
+	const verifyData = Buffer.concat([Buffer.from(canonProof, "utf8"), Buffer.from(canonDoc, "utf8")]);
+	const sig = base58btc.decode(proof.proofValue);
+	return verifyAsync(sig, verifyData, publicKey);
+}

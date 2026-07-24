@@ -43,6 +43,33 @@ export function buildDidDocument(origin: string, kid: string, publicKeyJwk: Reco
 	};
 }
 
+/** A DID document carrying multiple verification methods (M6 rotation): the
+ * old key is retained (so pre-rotation VCs stay verifiable) while
+ * `assertionMethod` lists only the keys authorised to sign NEW credentials. */
+export interface DidMethod {
+	kid: string;
+	publicKeyJwk: Record<string, string>;
+}
+
+export function buildDidDocumentMulti(
+	origin: string,
+	methods: DidMethod[],
+	assertionKids: string[],
+): DidDocument {
+	const did = didFor(origin);
+	return {
+		"@context": ["https://www.w3.org/ns/did/v1"],
+		id: did,
+		verificationMethod: methods.map((m) => ({ id: `${did}#${m.kid}`, type: "JsonWebKey", controller: did, publicKeyJwk: m.publicKeyJwk })),
+		assertionMethod: assertionKids.map((k) => `${did}#${k}`),
+	};
+}
+
+/** Inverse of `didFor`: the origin segment of a `did:web:<origin>` string. */
+export function originFromDid(did: string): string {
+	return did.startsWith("did:web:") ? did.slice("did:web:".length) : did;
+}
+
 /** JCS-inspired deterministic canonicalization (RFC 8785-shaped): recursively
  * sort object keys, preserve array order, no insignificant whitespace. Full
  * RFC 8785 number/unicode edge cases are a future hardening; DID documents are
