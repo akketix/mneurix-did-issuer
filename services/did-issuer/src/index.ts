@@ -10,6 +10,11 @@ import { putDid, getDid, setPublished } from "./store";
 import { loadOriginsFromEnv, originListFromUrls } from "./origins";
 import { resolveDid } from "./resolve";
 import { publishDid } from "./publish";
+import { randomUUID } from "node:crypto";
+import { issueOb3 } from "./vc-issue";
+import { issueSdJwtVc } from "./sdjwt";
+import { allocateOb3Status, allocateSdJwtStatus } from "./status";
+import type { Achievement, BadgeEvidence } from "@mneurix/shared";
 
 const SERVICE_TOKEN =
 	process.env.MNEURIX_DID_ISSUER_SERVICE_TOKEN ?? "dev-did-issuer-token";
@@ -24,6 +29,10 @@ if (
 
 const ISSUER_ORIGIN = process.env.MNEURIX_DID_ISSUER_ORIGIN ?? "did-issuer.mneurix.example";
 const issuerKey = loadOrCreateIssuerKey(process.env.MNEURIX_KEY_DIR);
+const ISSUER_URL = (process.env.MNEURIX_DID_ISSUER_URL ?? "https://did-issuer.mneurix.example").replace(/\/+$/, "");
+const ISSUER_NAME = process.env.MNEURIX_ISSUER_NAME ?? "Mneurix";
+const issuerDid = didFor(ISSUER_ORIGIN);
+const verificationMethod = `${issuerDid}#${issuerKey.kid}`;
 
 function mintFor(origin: string): { did: string; document: ReturnType<typeof buildDidDocument> } {
 	const jwk = publicKeyJwkFromPem(issuerKey.publicKeyPem);
@@ -41,6 +50,13 @@ app.get("/v1/openapi.json", (c) => c.json(openApiDoc));
 app.get("/.well-known/did.json", (c) => {
 	const { did, document } = mintFor(ISSUER_ORIGIN);
 	return c.json({ ...document, alsoKnownAs: [did] });
+});
+
+// Public SD-JWT VC issuer metadata (draft-ietf-oauth-sd-jwt-vc §3): the issuer
+// origin + the issuer Ed25519 JWK (with kid + alg) for key discovery.
+app.get("/.well-known/jwt-vc-issuer", (c) => {
+	const jwk = publicKeyJwkFromPem(issuerKey.publicKeyPem);
+	return c.json({ issuer: ISSUER_URL, jwks: { keys: [{ ...jwk, kid: issuerKey.kid, alg: "EdDSA" }] } });
 });
 
 const v1 = new Hono();
@@ -75,15 +91,66 @@ v1.get("/dids/:did", async (c) => {
 	return c.json({ did, document: result.document, resolvedFrom: result.resolvedFrom, docHash: result.docHash, verified: result.verified, mismatches: result.mismatches });
 });
 
-// The remaining v1 endpoints (VC issue, presentations:verify, keys:rotate/revoke,
-// credentials status) stay stubbed until M5/M6. Publish is implemented in M4.
+// The remaining v1 endpoints (presentations:verify, keys:rotate/revoke,
+// credentials status) stay stubbed until M6. VC issue + publish are live (M5/M4).
 const notImpl = (path: string) => (c: import("hono").Context) =>
-	jsonError(c, 501, "NOT_IMPLEMENTED", path + " is declared in the v1 contract but not implemented in this milestone (see M5/M6).");
-v1.post("/vcs:issue", notImpl("/v1/vcs:issue"));
+	jsonError(c, 501, "NOT_IMPLEMENTED", path + " is declared in the v1 contract but not implemented in this milestone (see M6).");
 v1.post("/presentations:verify", notImpl("/v1/presentations:verify"));
 v1.post("/dids/:did/keys:rotate", notImpl("/v1/dids/:did/keys:rotate"));
 v1.post("/dids/:did/keys:revoke", notImpl("/v1/dids/:did/keys:revoke"));
 v1.get("/credentials/:id/status", notImpl("/v1/credentials/:id/status"));
+
+// POST /v1/vcs:issue — issue a VC in one of two envelopes (M5):
+// data-integrity (OB3 ed25519-jcs-2020) or sd-jwt-vc (RFC 9901 SD-JWT VC, Ed25519-only).
+v1.post("/vcs:issue", async (c) => {
+	const body = (await c.req.json().catch(() => null)) as {
+		subjectId?: string;
+		secure?: string;
+		achievement?: Achievement;
+		evidence?: BadgeEvidence;
+		credentialId?: string;
+		vct?: string;
+		claims?: Record<string, unknown>;
+		selectivelyDisclosable?: string[];
+		holderJwk?: Record<string, string>;
+	} | null;
+	if (!body || !body.subjectId || !body.secure) {
+		return jsonError(c, 400, "BAD_REQUEST", "subjectId and secure are required (secure: data-integrity | sd-jwt-vc)");
+	}
+	const statusListId = `${ISSUER_URL}/statuslists/revocation/1`;
+
+	if (body.secure === "data-integrity") {
+		if (!body.achievement || !body.evidence) {
+			return jsonError(c, 400, "BAD_REQUEST", "data-integrity issue requires achievement + evidence");
+		}
+		const credentialId = body.credentialId ?? `${ISSUER_URL}/credentials/${randomUUID()}`;
+		const credentialStatus = allocateOb3Status(statusListId);
+		const issuer = { id: issuerDid, type: ["Profile"], name: ISSUER_NAME };
+		const credential = await issueOb3(body.subjectId, body.achievement, body.evidence, issuer, issuerKey, verificationMethod, credentialId, credentialStatus);
+		return c.json({ credential, format: "ob3", statusIndex: credentialStatus.statusListIndex }, 201);
+	}
+
+	if (body.secure === "sd-jwt-vc") {
+		if (!body.vct || !body.claims) {
+			return jsonError(c, 400, "BAD_REQUEST", "sd-jwt-vc issue requires vct + claims");
+		}
+		const selectivelyDisclosable = body.selectivelyDisclosable ?? [];
+		const status = allocateSdJwtStatus(statusListId);
+		const result = await issueSdJwtVc({
+			iss: issuerDid,
+			sub: body.subjectId,
+			vct: body.vct,
+			claims: body.claims,
+			selectivelyDisclosable,
+			...(body.holderJwk ? { holderJwk: body.holderJwk } : {}),
+			status,
+			verificationMethod,
+		}, issuerKey);
+		return c.json({ credential: result.credential, format: "dc+sd-jwt", statusIndex: status.statusListIndex }, 201);
+	}
+
+	return jsonError(c, 400, "BAD_REQUEST", "secure must be data-integrity or sd-jwt-vc");
+});
 
 // POST /v1/dids/:did/publish — atomic 2-phase publish to all configured (or
 // body-supplied) origins; 200 only on quorum confirm, 503 on quorum failure.
