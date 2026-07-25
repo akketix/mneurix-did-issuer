@@ -115,6 +115,9 @@ export async function verifyPresentation(input: VerifyInput): Promise<VerifyResu
 		const result = await verifySdJwtVc(fullForSig, issuerKey);
 		if (!result.signatureValid) return { verified: false, status: "rejected", kid, issuer: issuerDid, reason: "issuer signature invalid" };
 
+		// RFC 9901 §7.1 step 5: reject if any disclosure is not referenced by _sd.
+		if (!result.allDisclosuresReferenced) return { verified: false, status: "rejected", kid, issuer: issuerDid, ...(payload.sub ? { subject: payload.sub } : {}), reason: "unreferenced disclosure (RFC 9901 §7.1)" };
+
 		// Key binding (RFC 9901 §7.3).
 		if (input.requireKeyBinding && !kbJwt) {
 			return { verified: false, status: "rejected", kid, issuer: issuerDid, ...(payload.sub ? { subject: payload.sub } : {}), reason: "key binding required but absent" };
