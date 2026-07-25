@@ -57,7 +57,7 @@ export type LicenseKeyring = Map<string, string>;
 
 export const PlatformLicenseSchema = z.object({
 	orgId: z.string().min(1),
-	product: z.literal("onprem"),
+	product: z.enum(["onprem", "did-issuer-onprem", "proctoring-onprem"]),
 	tier: z.string().min(1),
 	validUntil: z.string().datetime({ offset: true }),
 	seats: z.number().int().positive().optional(),
