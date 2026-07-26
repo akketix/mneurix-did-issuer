@@ -13,6 +13,7 @@ import type { DidDocument } from "./did";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
+import { loadDataEncryptionKey, encryptAtRest, decryptAtRest } from "@mneurix/shared";
 
 export interface Stored {
 	document: DidDocument;
@@ -64,13 +65,13 @@ export class FileDidStore implements DidStore {
 	}
 	putDid(did: string, document: DidDocument, kid: string): void {
 		const stored: Stored = { document, kid, createdAt: new Date().toISOString() };
-		writeFileSync(this.pathFor(did), JSON.stringify(stored), "utf8");
+		this.write(did, JSON.stringify(stored));
 	}
 	getDid(did: string): Stored | undefined {
-		const p = this.pathFor(did);
-		if (!existsSync(p)) return undefined;
+		const raw = this.read(did);
+		if (raw === undefined) return undefined;
 		try {
-			return JSON.parse(readFileSync(p, "utf8")) as Stored;
+			return JSON.parse(raw) as Stored;
 		} catch {
 			return undefined;
 		}
@@ -78,7 +79,25 @@ export class FileDidStore implements DidStore {
 	setPublished(did: string, origins: string[], docHash: string): void {
 		const s = this.getDid(did);
 		if (!s) return;
-		writeFileSync(this.pathFor(did), JSON.stringify({ ...s, origins, docHash }), "utf8");
+		this.write(did, JSON.stringify({ ...s, origins, docHash }));
+	}
+	/** Write with app-level encryption when a DEK is loaded (MNEURIX_REST_ENCRYPTION=app-dek). */
+	private write(did: string, json: string): void {
+		const dek = loadDataEncryptionKey();
+		const data = dek ? encryptAtRest(json, dek) : json;
+		writeFileSync(this.pathFor(did), data, "utf8");
+	}
+	/** Read + decrypt when a DEK is loaded. */
+	private read(did: string): string | undefined {
+		const p = this.pathFor(did);
+		if (!existsSync(p)) return undefined;
+		try {
+			const raw = readFileSync(p, "utf8");
+			const dek = loadDataEncryptionKey();
+			return dek ? decryptAtRest(raw, dek).toString("utf8") : raw;
+		} catch {
+			return undefined;
+		}
 	}
 }
 

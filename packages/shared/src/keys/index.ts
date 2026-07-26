@@ -5,3 +5,4 @@ export * from "./keyMaterial";
 export * from "./provider";
 export * from "./local-sealed";
 export * from "./shamir";
+export * from "./rest-encryption-guard";
