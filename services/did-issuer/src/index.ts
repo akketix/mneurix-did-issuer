@@ -18,6 +18,7 @@ import { revokeKid } from "./revoked-kids";
 import { requireOperator } from "./operatorAuth";
 import { verifyPresentation } from "./vc-verify";
 import type { Achievement, BadgeEvidence } from "@mneurix/shared";
+import { assertRestEncryptionInProd } from "@mneurix/shared";
 
 const SERVICE_TOKEN =
 	process.env.MNEURIX_DID_ISSUER_SERVICE_TOKEN ?? "dev-did-issuer-token";
@@ -48,6 +49,9 @@ function mintFor(origin: string): { did: string; document: ReturnType<typeof bui
 }
 
 export const app = new Hono();
+// CISO encryption-at-rest enforcement (T4): refuse to boot in prod without
+// MNEURIX_REST_ENCRYPTION=attested or =app-dek.
+assertRestEncryptionInProd();
 app.get("/health", (c) => c.json({ status: "ok", service: "did-issuer" }));
 app.get("/v1/openapi.json", (c) => c.json(openApiDoc));
 
