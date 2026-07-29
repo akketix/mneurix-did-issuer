@@ -126,7 +126,11 @@ export function verifyStatus(
 	statusListIndex: number,
 ): { revoked: boolean; delisted: boolean } {
 	if (statusListIndex < 0 || statusListIndex >= doc.size) {
-		return { revoked: false, delisted: false };
+		// Fail-closed: an out-of-range index means the credential claims a
+		// status position not present in the list (tampered or stale list) --
+		// treat as revoked so a caller checking `revoked` rejects it rather
+		// than silently passing.
+		return { revoked: true, delisted: false };
 	}
 	const bytes = decodeBitstring(doc.encodedList);
 	const bit = getBit(bytes, statusListIndex);

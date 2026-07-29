@@ -148,7 +148,7 @@ export class LocalSealedKeyProvider implements KeyProvider {
 
 	private setCurrentKid(kid: string): void {
 		this._currentKid = kid;
-		writeFileSync(join(this.dir, "current.kid"), kid);
+		writeFileSync(join(this.dir, "current.kid"), kid, { mode: 0o600 });
 	}
 
 	/** Load (or create) the sealed master key, returning the raw 32 bytes. */

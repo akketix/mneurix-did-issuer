@@ -1,5 +1,5 @@
 # mneurix-did-issuer — multi-stage image (mirrors mneurix-lattice's hardened Dockerfile).
-FROM node:20-slim AS build
+FROM node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS build
 WORKDIR /app
 COPY package*.json ./
 COPY packages/*/package.json ./packages/*/.
@@ -10,7 +10,7 @@ COPY packages ./packages
 COPY services ./services
 RUN npm run build
 
-FROM node:20-slim AS runtime
+FROM node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app /app

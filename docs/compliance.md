@@ -45,7 +45,10 @@ the DID document's `verificationMethod`.
 
 Issued credentials carry a `credentialStatus` entry pointing to a Bitstring
 Status List. Revocation flips the bit; the list is re-signed on each mutation.
-Verifiers fail-closed when the status list is unreachable or tampered.
+Verifiers fail-closed when the status list is unreachable or stale. The list
+is signed on each mutation (tamper-evident in principle); signature
+verification on the verify path is a future hardening — v1 fail-closes on
+unreachable/stale lists + out-of-range status indices.
 
 **Requirement met:** revocation is verifiable + tamper-evident; the status list
 is a separate, signed resource.
@@ -53,13 +56,16 @@ is a separate, signed resource.
 ## OWASP ASVS L2
 
 - **V2 (Authn):** operator auth via service-token (constant-time compare) +
-  two-person revocation quorum.
+  role-based access control on governance acts (rotate/revoke). A two-person
+  revocation quorum is available in `@mneurix/shared` but is not wired to the
+  revoke endpoint in v1.
 - **V3 (Session):** no server-side sessions (stateless service-token auth).
 - **V5 (Validation):** all request bodies validated with zod; no `as` casts on
   untrusted input.
 - **V6 (Crypto):** Ed25519 only; no SHA-1; no ECB; canonicalization via JCS.
 - **V9 (Comms):** TLS required for remote origins; `http://` rejected.
-- **V13 (API):** rate-limiting + service-token on all mutating endpoints.
+- **V13 (API):** service-token on all mutating endpoints. Rate-limiting is a
+  deployment / reverse-proxy concern (not in-process in v1).
 
 **Requirement met:** the service targets ASVS L2 controls.
 
@@ -78,9 +84,12 @@ is a separate, signed resource.
 
 ## Key custody (G-CRYPTO-1)
 
-The issuer's Ed25519 master key is sealed (AES-GCM) with a passphrase. Key
-escrow (Shamir split) is supported. The plaintext PEM provider is forbidden in
-production (boot guard). Key rotation + signed-revocation tombstones are
-supported.
+The issuer's Ed25519 master key is sealed (AES-GCM) with a passphrase. Shamir
+Secret Sharing is implemented in `@mneurix/shared` (available for offline
+key-share escrow), but the in-process `ShamirEscrowKeyProvider` is a future
+item — v1 seals the master + the operator is responsible for offline share
+escrow. The plaintext PEM provider is forbidden in production (boot guard).
+Key rotation + signed-revocation tombstones are supported.
 
-**Requirement met:** the signing key is sealed at rest + escrowed.
+**Requirement met:** the signing key is sealed at rest; Shamir escrow is
+available for offline use (in-process escrow is future).

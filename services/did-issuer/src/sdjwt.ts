@@ -140,7 +140,7 @@ export async function issueSdJwtVc(input: SdJwtIssueInput, keys: KeyMaterial): P
 	const issuerJwt = `${headerB64}.${payloadB64}.${b64url(signature)}`;
 
 	// RFC 9901 §4: <Issuer-JWT>~<D.1>~...~<D.N>~ (trailing tilde, no KB-JWT at issuance).
-	const credential = `${issuerJwt}~${disclosures.join("~")}${disclosures.length > 0 ? "~" : "~"}`;
+	const credential = `${issuerJwt}~${disclosures.join("~")}${disclosures.length > 0 ? "~" : ""}`;
 	const sdHash = sha256B64url(credential);
 	return { credential, issuerJwt, disclosures, sdHash };
 }

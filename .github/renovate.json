@@ -1,0 +1,17 @@
+{
+	"$schema": "https://docs.renovatebot.com/renovate-schema.json",
+	"extends": ["config:recommended", ":pinGitHubActionDigests"],
+	"dockerfile": {
+		"pinDigests": true
+	},
+	"docker-compose": {
+		"pinDigests": true
+	},
+	"packageRules": [
+		{
+			"description": "Pin Docker base images by digest (supply-chain: mutable tags are a risk).",
+			"matchDatasources": ["docker"],
+			"pinDigests": true
+		}
+	]
+}

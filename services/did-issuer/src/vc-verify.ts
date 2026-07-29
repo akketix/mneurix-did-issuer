@@ -6,9 +6,11 @@
  *
  * Fail-closed: a VC signed by a revoked issuer kid (F15 tombstone) is rejected;
  * a credential whose status bit is revoked is rejected. The issuer signing key
- * is resolved from the did:web DID document (the verificationMethod publicKeyJwk
- * matching the VC's `kid`), so the verifier trusts the published key, not a
- * private store.
+ * is resolved from the LOCAL DID store (the verificationMethod publicKeyJwk
+ * matching the VC's `kid`) — v1 verifies credentials this issuer published
+ * (its own stored DID docs). Cross-issuer did:web fetch resolution (constrained,
+ * no SSRF) is tracked as future hardening. The holder cnf.jwk is pinned to
+ * Ed25519 (OKP/Ed25519) on KB-JWT verify (no algorithm confusion).
  *
  * Purity: node:crypto + vc-issue + sdjwt + store + revoked-kids + status. */
 import { createHash, createPublicKey } from "node:crypto";
@@ -113,7 +115,7 @@ export async function verifyPresentation(input: VerifyInput): Promise<VerifyResu
 		if (await isKidRevoked(kid)) return { verified: false, status: "revoked", kid, issuer: issuerDid, reason: "signing key revoked" };
 
 		// Verify the issuer signature over the full credential (no KB).
-		const sdJwtWithoutKb = `${issuerJwt}~${disclosures.join("~")}${disclosures.length > 0 || kbJwt ? "~" : "~"}`;
+		const sdJwtWithoutKb = `${issuerJwt}~${disclosures.join("~")}${disclosures.length > 0 ? "~" : ""}`;
 		const fullForSig = kbJwt ? sdJwtWithoutKb : input.presentation;
 		const result = await verifySdJwtVc(fullForSig, issuerKey);
 		if (!result.signatureValid) return { verified: false, status: "rejected", kid, issuer: issuerDid, reason: "issuer signature invalid" };
@@ -128,6 +130,10 @@ export async function verifyPresentation(input: VerifyInput): Promise<VerifyResu
 		if (kbJwt) {
 			const holderJwk = payload.cnf?.jwk;
 			if (!holderJwk) return { verified: false, status: "rejected", kid, issuer: issuerDid, reason: "KB-JWT present without cnf.jwk" };
+			// Pin the holder key to Ed25519 (no algorithm confusion: an attacker
+			// cannot substitute an RSA/EC cnf.jwk).
+			if (holderJwk.kty !== "OKP" || holderJwk.crv !== "Ed25519")
+				return { verified: false, status: "rejected", kid, issuer: issuerDid, reason: "cnf.jwk must be Ed25519 (OKP/Ed25519)" };
 			const expectedSdHash = sha256B64url(sdJwtWithoutKb);
 			const kbOk = await verifyKbJwt(kbJwt, holderJwk, expectedSdHash, input.nonce, input.aud);
 			if (!kbOk) return { verified: false, status: "rejected", kid, issuer: issuerDid, ...(payload.sub ? { subject: payload.sub } : {}), reason: "KB-JWT invalid" };

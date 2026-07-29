@@ -2,22 +2,15 @@
 // You may not remove or circumvent license keys, or re-host this as a managed service.
 
 /**
- * services/credential/src/serviceAuth.ts — R19-style service-to-service auth
- * for the credential service. The `/issue` route is called only by trusted
- * internal services (the api service after a council grade, the progression
- * service on a micro-badge mastery mint, the review-queue on a human-review
- * approve). Those callers present a shared secret in the
- * `x-mneurix-service-token` header; this middleware enforces it in constant
- * time.
+ * services/did-issuer/src/serviceAuth.ts — R19-style service-to-service auth
+ * for the did-issuer service. The mutation routes (/v1/vcs:issue, key
+ * rotate/revoke, publish) are called only by trusted internal callers, which
+ * present a shared secret in the `x-mneurix-service-token` header; this
+ * middleware enforces it in constant time.
  *
- * CISO scan F1: `/issue` previously minted Ed25519-signed Open Badges from
- * attacker-supplied scores with NO auth — total academic-integrity collapse.
- * This gate closes that: an unauthenticated actor can no longer call `/issue`.
- *
- * Config (env): `MNEURIX_CREDENTIAL_SERVICE_TOKEN` — shared secret. Defaults
- * to `dev-credential-token` for local dev (matches the api + progression
- * default); the credential service refuses to boot in production if the
- * default is used (see the boot guard in `index.ts`).
+ * Config (env): `MNEURIX_DID_ISSUER_SERVICE_TOKEN` — shared secret. Defaults
+ * to `dev-did-issuer-token` for local dev; the did-issuer refuses to boot in
+ * production if the default is used (see the boot guard in `index.ts`).
  *
  * Purity: `@mneurix/shared/operator` (constantTimeEqual) + Hono.
  */

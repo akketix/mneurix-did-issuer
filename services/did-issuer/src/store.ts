@@ -59,7 +59,7 @@ export class FileDidStore implements DidStore {
 	private readonly dir: string;
 	constructor(dir?: string) {
 		this.dir = resolve(dir ?? process.env.MNEURIX_DID_DATA_DIR ?? join(process.cwd(), "data", "dids"));
-		mkdirSync(this.dir, { recursive: true });
+		mkdirSync(this.dir, { recursive: true, mode: 0o700 });
 	}
 	/** Sanitize the DID into a safe filename (DIDs have colons). */
 	private pathFor(did: string): string {
@@ -88,7 +88,7 @@ export class FileDidStore implements DidStore {
 	private write(did: string, json: string): void {
 		const dek = loadDataEncryptionKey();
 		const data = dek ? encryptAtRest(json, dek) : json;
-		writeFileSync(this.pathFor(did), data, "utf8");
+		writeFileSync(this.pathFor(did), data, { encoding: "utf8", mode: 0o640 });
 	}
 	/** Read + decrypt when a DEK is loaded. */
 	private read(did: string): string | undefined {
