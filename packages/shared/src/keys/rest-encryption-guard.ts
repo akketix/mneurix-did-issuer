@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Mneurix. Licensed under the Elastic License 2.0 (ELv2) — see LICENSE.
+// You may not remove or circumvent license keys, or re-host this as a managed service.
+
 /**
  * @mneurix/shared/keys/rest-encryption-guard — encryption-at-rest enforcement
  * (the "attest + enforce, don't prescribe" model).

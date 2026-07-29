@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Mneurix. Licensed under the Elastic License 2.0 (ELv2) — see LICENSE.
+// You may not remove or circumvent license keys, or re-host this as a managed service.
+
 /** OpenAPI 3.1 document for the did-issuer service. Served at GET /v1/openapi.json.
  * Paths declare the v1 contract; handlers are stubbed in M1 (501) and filled in
  * M2+ (proctoring engine) / M3-M6 (DID issuance). */

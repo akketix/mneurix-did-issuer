@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Mneurix. Licensed under the Elastic License 2.0 (ELv2) — see LICENSE.
+// You may not remove or circumvent license keys, or re-host this as a managed service.
+
 /** Verifier (M6) — POST /v1/presentations:verify for OB3 Data-Integrity VCs,
  * SD-JWT VCs, and SD-JWT+KB (Key Binding JWT per RFC 9901 §7.3).
  *

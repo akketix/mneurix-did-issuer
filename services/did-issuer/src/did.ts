@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Mneurix. Licensed under the Elastic License 2.0 (ELv2) — see LICENSE.
+// You may not remove or circumvent license keys, or re-host this as a managed service.
+
 /** did:web DID document builder (M3) — W3C DID Core v1.0 + did:web method.
  *
  * The DID string is `did:web:<origin>` (origin without scheme; colons allowed).

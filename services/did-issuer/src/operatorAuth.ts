@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Mneurix. Licensed under the Elastic License 2.0 (ELv2) — see LICENSE.
+// You may not remove or circumvent license keys, or re-host this as a managed service.
+
 /** Operator-auth middleware for the did-issuer (M6) — governance acts
  * (rotate / revoke) require an operator role, mirroring the lattice's
  * `services/credential/src/operatorAuth.ts` over `@mneurix/shared/operator`.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Mneurix. Licensed under the Elastic License 2.0 (ELv2) — see LICENSE.
+// You may not remove or circumvent license keys, or re-host this as a managed service.
+
 // T10.1: FileDidStore persistence test.
 // Run: npx tsx services/did-issuer/test/store-persistence.test.ts
 import { test, after } from "node:test";

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Mneurix. Licensed under the Elastic License 2.0 (ELv2) — see LICENSE.
+// You may not remove or circumvent license keys, or re-host this as a managed service.
+
 /** SD-JWT VC issuer — RFC 9901 + draft-ietf-oauth-sd-jwt-vc (M5).
  *
  * Ed25519-only (locked decision 2026-07-23): the Issuer-signed JWT uses

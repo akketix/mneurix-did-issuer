@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Mneurix. Licensed under the Elastic License 2.0 (ELv2) — see LICENSE.
+// You may not remove or circumvent license keys, or re-host this as a managed service.
+
 /**
  * @mneurix/shared/keys/shamir — Shamir Secret Sharing over GF(2^8) (CISO
  * security must-fix #2 for P1.1): split the sealed master key into N shares so

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Mneurix. Licensed under the Elastic License 2.0 (ELv2) — see LICENSE.
+// You may not remove or circumvent license keys, or re-host this as a managed service.
+
 /**
  * @mneurix/shared/identity — liveness/face-match plug-in interface (G-ID-1,
  * the "person half" of identity: "is the person at the keyboard the account?").
