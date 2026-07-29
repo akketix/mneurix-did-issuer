@@ -1,0 +1,80 @@
+# mneurix-did-issuer — Release (CI-gated, signed Docker image to GHCR).
+#
+# Enforces "deploy must come from CI-gated main": on a `v*` tag, re-run the full
+# test suite, then build + push ghcr.io/akketix/mneurix-did-issuer:<tag> and
+# cosign-sign it (keyless / Sigstore). Re-running tests at release time closes
+# the admin-override-then-tag hole: even a direct push to main cannot ship an
+# image that fails tests. The signature lets a deployer verify the image was
+# built by this CI before running it.
+#
+# To cut a release: merge to main (CI green) -> tag vX.Y.Z -> push --tags.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write   # cosign keyless (Sigstore OIDC)
+
+jobs:
+  release:
+    name: Build + test + sign + publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install (npm ci)
+        run: npm ci
+
+      # Airtight release gate: re-run the full suite at release time.
+      - name: Test (full suite)
+        run: npm test
+
+      - name: Image base (lowercased owner)
+        run: |
+          OL="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "OWNER_LC=$OL" >> "$GITHUB_ENV"
+          echo "IMG_BASE=ghcr.io/$OL/mneurix-did-issuer" >> "$GITHUB_ENV"
+
+      - name: Build + push image to GHCR
+        id: img
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMG_BASE }}:${{ github.ref_name }}
+            ${{ env.IMG_BASE }}:latest
+          provenance: true
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the image (keyless / Sigstore)
+        run: |
+          cosign sign --yes \
+            ${{ env.IMG_BASE }}@${{ steps.img.outputs.digest }}
+
+      - name: Summary
+        run: |
+          TAG="${{ github.ref_name }}"
+          DIG="${{ steps.img.outputs.digest }}"
+          {
+            echo "### Released \`${{ env.IMG_BASE }}:$TAG\` (cosign-signed)"
+            echo ""
+            echo "Verify before deploy:"
+            echo "\`\`\`"
+            echo "cosign verify ${{ env.IMG_BASE }}:$TAG \\"
+            echo "  --certificate-oidc-issuer \\"
+            echo "  https://token.actions.githubusercontent.com"
+            echo "\`\`\`"
+            echo "Digest: \`$DIG\`"
+          } >> "$GITHUB_STEP_SUMMARY"

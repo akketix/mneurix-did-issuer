@@ -38,3 +38,36 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm audit --omit=dev --audit-level=high
+  trivy:
+    name: Trivy secret + config scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # HARD-FAIL: a committed secret in a public repo is a live compromise.
+      # The repo is going public under ELv2 -- no secrets may be in history.
+      - name: Trivy - repo secret scan (hard-fail)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: secret
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      # Report-only until the Dockerfile/compose findings are baselined.
+      - name: Trivy - Dockerfile + compose config scan (report-only)
+        uses: aquasecurity/trivy-action@0.24.0
+        continue-on-error: true
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
