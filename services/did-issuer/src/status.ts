@@ -117,6 +117,17 @@ export function revokeStatus(statusPurpose: StatusPurpose, index: number): void 
 	listFor(statusPurpose).revoke(index);
 }
 
+
+/** The current status-list bitstring (base64url) for a purpose -- used by the
+ * IETF Token Status List JWT endpoint (GET /statuslists/:purpose/:id). */
+export function getEncodedStatusList(purpose: StatusPurpose): string {
+	return listFor(purpose).encodedList;
+}
+
+/** Number of allocated status entries for a purpose. */
+export function getStatusListCount(purpose: StatusPurpose): number {
+	return listFor(purpose).count;
+}
 export function _resetStatusForTests(): void {
 	lists.clear();
 	credentialStatus.clear();

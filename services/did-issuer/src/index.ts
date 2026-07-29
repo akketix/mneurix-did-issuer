@@ -15,12 +15,12 @@ import { resolveDid } from "./resolve";
 import { publishDid } from "./publish";
 import { randomUUID } from "node:crypto";
 import { issueOb3 } from "./vc-issue";
-import { issueSdJwtVc } from "./sdjwt";
-import { allocateOb3Status, allocateSdJwtStatus, getCredentialStatus } from "./status";
+import { issueSdJwtVc, signIssuerJwt } from "./sdjwt";
+import { allocateOb3Status, allocateSdJwtStatus, getCredentialStatus, getEncodedStatusList } from "./status";
 import { revokeKid } from "./revoked-kids";
 import { requireOperator } from "./operatorAuth";
 import { verifyPresentation } from "./vc-verify";
-import type { Achievement, BadgeEvidence } from "@mneurix/shared";
+import type { Achievement, BadgeEvidence, StatusPurpose } from "@mneurix/shared";
 import { assertRestEncryptionInProd } from "@mneurix/shared";
 
 const SERVICE_TOKEN =
@@ -66,9 +66,55 @@ app.get("/.well-known/did.json", (c) => {
 
 // Public SD-JWT VC issuer metadata (draft-ietf-oauth-sd-jwt-vc §3): the issuer
 // origin + the issuer Ed25519 JWK (with kid + alg) for key discovery.
+// Default vct for Mneurix achievement credentials (the vct definition is
+// served at GET /vct/:name). Caller-supplied vcts are still accepted at
+// issuance; this advertises the default for wallet/verifier discovery.
+const DEFAULT_VCT = `${ISSUER_URL}/vct/achievement`;
+
+// Public SD-JWT VC issuer metadata (draft-ietf-oauth-sd-jwt-vc): issuer origin
+// + the issuer Ed25519 JWK (kid + alg) for key discovery, + the supported vct
+// values (wallet/verifier discovery of the credential type).
 app.get("/.well-known/jwt-vc-issuer", (c) => {
 	const jwk = publicKeyJwkFromPem(issuerKey.publicKeyPem);
-	return c.json({ issuer: ISSUER_URL, jwks: { keys: [{ ...jwk, kid: issuerKey.kid, alg: "EdDSA" }] } });
+	return c.json({
+		issuer: ISSUER_URL,
+		jwks: { keys: [{ ...jwk, kid: issuerKey.kid, alg: "EdDSA" }] },
+		vct_values: [DEFAULT_VCT],
+	});
+});
+
+// SD-JWT VC vct type metadata: the definition for a vct value. v1 serves a
+// minimal definition for the default achievement vct; the full per-achievement-
+// type vct taxonomy is a follow-up.
+app.get("/vct/:name", (c) => {
+	const name = c.req.param("name");
+	if (name !== "achievement") return c.json({ error: "unknown vct" }, 404);
+	return c.json({
+		vct: DEFAULT_VCT,
+		name: "Mneurix Achievement",
+		description: "A verifiable achievement/competency credential issued by Mneurix.",
+		claims: {},
+	});
+});
+
+// IETF Token Status List (draft-ietf-oauth-status-list): the status list for a
+// purpose, served as a signed JWT (statuslist+jwt) at the uri a credential's
+// `status.status_list.uri` points to. A verifier fetches this, checks the issuer
+// signature (against /.well-known/jwt-vc-issuer), + reads the bit at the
+// credential's `status.status_list.idx` (0 = valid, 1 = revoked, fail-closed).
+app.get("/statuslists/:purpose/:id", async (c) => {
+	const purpose = c.req.param("purpose") as StatusPurpose;
+	if (purpose !== "revocation" && purpose !== "refresh" && purpose !== "delisted") {
+		return c.json({ error: "invalid status purpose" }, 400);
+	}
+	const uri = `${ISSUER_URL}/statuslists/${purpose}/${c.req.param("id")}`;
+	const payload = {
+		sub: uri,
+		iat: Math.floor(Date.now() / 1000),
+		status_list: { bits: 1, vals: getEncodedStatusList(purpose) },
+	};
+	const jwt = await signIssuerJwt(payload, issuerKey, issuerKey.kid, "statuslist+jwt");
+	return c.body(jwt, 200, { "content-type": "application/statuslist+jwt" });
 });
 
 const v1 = new Hono();
