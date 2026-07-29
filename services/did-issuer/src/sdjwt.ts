@@ -160,6 +160,25 @@ export interface SdJwtVerifyResult {
 	allDisclosuresReferenced: boolean;
 }
 
+/** Sign an arbitrary compact JWT (Ed25519/EdDSA) with the issuer key -- used for
+ * the IETF Token Status List (statuslist+jwt) + other issuer-signed artifacts.
+ * Returns header.payload.signature. */
+export async function signIssuerJwt(
+	payload: Record<string, unknown>,
+	keys: KeyMaterial,
+	kid: string,
+	typ: string,
+): Promise<string> {
+	const { seed } = expandKey(keys);
+	if (!seed) throw new Error("signIssuerJwt: private key required for signing");
+	const header = { alg: "EdDSA", typ, kid };
+	const headerB64 = b64url(JSON.stringify(header));
+	const payloadB64 = b64url(JSON.stringify(payload));
+	const signingInput = Buffer.from(headerB64 + "." + payloadB64, "ascii");
+	const signature = await signAsync(signingInput, seed);
+	return headerB64 + "." + payloadB64 + "." + b64url(signature);
+}
+
 export async function verifySdJwtVc(credential: string, keys: KeyMaterial): Promise<SdJwtVerifyResult> {
 	const { publicKey } = expandKey(keys);
 	// SD-JWT = <Issuer-JWT>~<D.1>~...~<D.N>~  → split on "~".
