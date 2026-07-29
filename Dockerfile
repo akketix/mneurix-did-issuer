@@ -19,5 +19,5 @@ RUN npm prune --omit=dev --workspaces --include-workspace-root \
 USER node
 EXPOSE 7004
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \
-	CMD node -e "fetch('http://localhost:'+($env:DID_ISSUER_PORT||7004)+'/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+	CMD node -e "fetch('http://localhost:'+(process.env.DID_ISSUER_PORT||7004)+'/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
 CMD ["node", "dist/services/did-issuer/src/index.js"]

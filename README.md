@@ -23,12 +23,15 @@ un-forgeable credentials.
 ```bash
 git clone https://github.com/akketix/mneurix-did-issuer && cd mneurix-did-issuer
 docker build -t did-issuer .
-docker run -p 7004:7004 -e DID_ISSUER_OPERATOR_TOKEN=dev-token did-issuer
+# Set a service token (the service refuses the default in production — see the
+# boot guard in src/index.ts). Bind loopback only for a local eval.
+TOKEN=change-me-$(openssl rand -hex 12)
+docker run -p 127.0.0.1:7004:7004 -e MNEURIX_DID_ISSUER_SERVICE_TOKEN=$TOKEN did-issuer
 # in another shell — mint a verifiable credential:
-curl -s localhost:7004/health                       # -> {"ok":true,...}
+curl -s localhost:7004/health                       # -> {"status":"ok",...}
 curl -s localhost:7004/.well-known/did.json | head   # -> the did:web DID document
 curl -s -X POST localhost:7004/v1/vcs:issue \
-  -H "x-mneurix-operator-token: dev-token" -H "content-type: application/json" \
+  -H "x-mneurix-service-token: $TOKEN" -H "content-type: application/json" \
   -d '{"secure":"data-integrity","subjectId":"did:web:example.com:alice","achievement":{"id":"a1","name":"Demo"}}'
 ```
 

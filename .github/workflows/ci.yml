@@ -50,19 +50,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Secret scan. Report-only until the test-fixture false positives (e.g. the
-      # committed test Ed25519 key in packages/licensing/test) are triaged + an
-      # ignore list is added -- then drop continue-on-error to hard-fail. The
-      # pre-public local history sweep found no real secrets.
-      - name: Trivy - repo secret scan (report-only until baselined)
+      # HARD-FAIL: a committed secret in a public repo is a live compromise.
+      # The repo is going public under ELv2 -- no secrets may be in history.
+      # (Verified clean: the test fixtures generate keys at runtime via
+      # generateKeyPairSync, no static committed keys; .env examples use
+      # low-entropy placeholders. Keep tests runtime-generating keys.)
+      - name: Trivy - repo secret scan (hard-fail)
         uses: aquasecurity/trivy-action@v0.24.0
-        continue-on-error: true
         with:
           scan-type: fs
           scan-ref: .
           scanners: secret
           severity: HIGH,CRITICAL
           ignore-unfixed: true
+          exit-code: "1"
 
       # Report-only until the Dockerfile/compose findings are baselined.
       - name: Trivy - Dockerfile + compose config scan (report-only)

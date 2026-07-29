@@ -27,6 +27,8 @@ import {
 	createCipheriv,
 	createDecipheriv,
 } from "node:crypto";
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { join } from "node:path";
 
 export type RestEncryptionMode = "attested" | "app-dek" | "none";
 
@@ -37,8 +39,27 @@ const SCRYPT_P = 1;
 const SCRYPT_DKLEN = 32;
 const SCRYPT_MAXMEM = 128 * 1024 * 1024; // 128 MiB
 const GCM_IV_LEN = 12;
-/** Fixed salt for the DEK derivation (the customer's secret is the variable). */
+/** Fallback salt for the DEK derivation when no per-install salt is configured
+ * (dev + unit tests). Production derives a per-install salt (see
+ * loadRestDekSalt) so identical customer DEK secrets do NOT derive identical
+ * AES keys across installs — the salt is a domain separator, not a secret, but
+ * it must be unique per install. */
 const REST_DEK_SALT = "mneurix-rest-encryption-dek-v1";
+const REST_DEK_SALT_FILE = "rest-dek-salt.bin";
+
+/** Load (or generate on first boot) the per-install DEK salt from
+ * `${MNEURIX_KEY_DIR}/rest-dek-salt.bin` (32 random bytes, mode 0o600). The
+ * salt is a domain separator — not secret — but it MUST be unique per install so
+ * identical customer DEK secrets do not derive identical AES keys across
+ * deployments. Generated once, persisted, then read on every boot. */
+function loadRestDekSalt(keyDir: string): Buffer {
+	mkdirSync(keyDir, { recursive: true });
+	const file = join(keyDir, REST_DEK_SALT_FILE);
+	if (existsSync(file)) return readFileSync(file);
+	const salt = randomBytes(32);
+	writeFileSync(file, salt, { mode: 0o600 });
+	return salt;
+}
 
 /** Minimum length for the customer-supplied DEK secret. */
 export const MIN_DEK_SECRET_LEN = 32;
@@ -71,6 +92,11 @@ export function assertRestEncryptionInProd(opts: {
 				`MNEURIX_REST_ENCRYPTION=app-dek requires MNEURIX_DATA_ENCRYPTION_KEY (>=${MIN_DEK_SECRET_LEN} chars) — the customer-supplied data encryption key. The key stays in the customer's hands; the product derives the AES key via scrypt.`,
 			);
 		}
+		if (isProdLike && !process.env.MNEURIX_KEY_DIR) {
+			throw new Error(
+				"MNEURIX_REST_ENCRYPTION=app-dek in production requires MNEURIX_KEY_DIR — the per-install DEK salt is persisted at MNEURIX_KEY_DIR/rest-dek-salt.bin so identical customer DEK secrets do not derive identical keys across installs. Set MNEURIX_KEY_DIR to a persistent, backed-up directory.",
+			);
+		}
 	}
 	return mode;
 }
@@ -87,7 +113,13 @@ export function loadDataEncryptionKey(): Buffer | null {
 	if (cachedDek) return cachedDek;
 	const secret = process.env.MNEURIX_DATA_ENCRYPTION_KEY;
 	if (!secret || secret.length < MIN_DEK_SECRET_LEN) return null;
-	cachedDek = scryptSync(secret, REST_DEK_SALT, SCRYPT_DKLEN, {
+	// Per-install salt when MNEURIX_KEY_DIR is set (prod); fixed fallback salt
+	// for dev/unit tests that do not configure a key dir.
+	const keyDir = process.env.MNEURIX_KEY_DIR;
+	const salt = keyDir
+		? loadRestDekSalt(keyDir)
+		: Buffer.from(REST_DEK_SALT, "utf8");
+	cachedDek = scryptSync(secret, salt, SCRYPT_DKLEN, {
 		N: SCRYPT_N,
 		r: SCRYPT_R,
 		p: SCRYPT_P,

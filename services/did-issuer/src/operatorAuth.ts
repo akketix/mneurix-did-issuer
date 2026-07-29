@@ -19,7 +19,16 @@ export function requireOperator(roles: string[]): MiddlewareHandler<{ Variables:
 		const operators = loadOperators(); // per-request env read
 		if (operators.length === 0) {
 			// Dev fallback: no operators configured — the router-wide service
-			// token already authenticated the caller; allow with a synthetic operator.
+			// token already authenticated the caller; allow with a synthetic
+			// operator. REFUSED in production so a shared service token alone
+			// cannot perform governance acts (rotate/revoke) — operators must be
+			// explicitly configured. Matches the boot-guard prod detection.
+			if (process.env.MNEURIX_ENV === "production") {
+				return c.json(
+					{ error: "MNEURIX_OPERATORS must be configured in production for governance acts" },
+					503,
+			);
+			}
 			c.set("operator", { id: "dev", roles });
 			await next();
 			return;
