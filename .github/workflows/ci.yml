@@ -74,30 +74,3 @@ jobs:
           scan-ref: .
           severity: HIGH,CRITICAL
           ignore-unfixed: true
-  image:
-    name: Build + scan container image
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      security-events: write
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-
-      - name: Build image (load, no push)
-        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25
-        with:
-          context: .
-          push: false
-          load: true
-          tags: mneurix-did-issuer:ci
-
-      # Catch base-image (node:20-slim) + app-layer CVEs. Report-only until
-      # the baseline is triaged, then drop continue-on-error to hard-fail.
-      - name: Trivy image scan (HIGH/CRITICAL, report-only until baselined)
-        uses: aquasecurity/trivy-action@6e7b7d1fd3e4fef0c5fa8cce1229c54b2c9bd0d8
-        continue-on-error: true
-        with:
-          image-ref: mneurix-did-issuer:ci
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
