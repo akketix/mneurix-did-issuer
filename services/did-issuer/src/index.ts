@@ -18,6 +18,7 @@ import { issueOb3 } from "./vc-issue";
 import { issueSdJwtVc, signIssuerJwt } from "./sdjwt";
 import { allocateOb3Status, allocateSdJwtStatus, getCredentialStatus, getEncodedStatusList } from "./status";
 import { createCredentialOffer, exchangePreAuthorizedCode, consumeAccessToken } from "./oid4vci";
+import { createAuthorizationRequest } from "./openid4vp";
 import { revokeKid } from "./revoked-kids";
 import { requireOperator } from "./operatorAuth";
 import { verifyPresentation } from "./vc-verify";
@@ -332,6 +333,29 @@ v1.post("/credential-offers", async (c) => {
 		...(body.holderJwk ? { holderJwk: body.holderJwk } : {}),
 	});
 	return c.json(result.credential_offer, 201);
+});
+
+// POST /v1/presentations/request (OpenID4VP verifier, service-token-gated):
+// generate an openid4vp:// authorization request (a DCQL query for an SD-JWT VC
+// by vct) + a verifier session (nonce/state). The wallet POSTs the vp_token to
+// the response_uri (the receiver lands in 1.3).
+v1.post("/presentations/request", async (c) => {
+	const body = (await c.req.json().catch(() => null)) as {
+		vct?: string;
+		claims?: string[];
+		clientId?: string;
+		responseUri?: string;
+	} | null;
+	if (!body || !body.vct) {
+		return jsonError(c, 400, "BAD_REQUEST", "vct is required");
+	}
+	const result = createAuthorizationRequest(ISSUER_URL, {
+		vct: body.vct,
+		...(body.claims ? { claims: body.claims } : {}),
+		...(body.clientId ? { clientId: body.clientId } : {}),
+		...(body.responseUri ? { responseUri: body.responseUri } : {}),
+	});
+	return c.json(result, 201);
 });
 
 // POST /v1/dids/:did/publish — atomic 2-phase publish to all configured (or
