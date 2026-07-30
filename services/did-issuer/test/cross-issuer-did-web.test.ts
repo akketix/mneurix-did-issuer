@@ -95,3 +95,19 @@ test("cross-issuer did:web: an unallowed origin is rejected (allow-list gate)", 
 		delete process.env.MNEURIX_DIDWEB_ALLOW_ORIGINS;
 	}
 });
+
+test("cross-issuer did:web: an oversized did:web doc is rejected (size cap, DoS guard)", async () => {
+	const fk = foreignKeyMaterial();
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = (() => Promise.resolve(new Response("{}", { status: 200, headers: { "content-length": "2000000" } }))) as typeof globalThis.fetch;
+	process.env.MNEURIX_DIDWEB_ALLOW_ORIGINS = "other-issuer.example";
+	try {
+		const result = await issueSdJwtVc({ iss: FOREIGN_DID, sub: SUBJECT, vct: VCT, claims: { score: 0.9 }, selectivelyDisclosable: ["score"], verificationMethod: `${FOREIGN_DID}#${FOREIGN_KID}` }, fk.keys);
+		const v = await verify(result.credential);
+		assert.equal(v.verified, false, "oversized doc -> key not resolved -> unavailable");
+		assert.equal(v.status, "unavailable");
+	} finally {
+		globalThis.fetch = realFetch;
+		delete process.env.MNEURIX_DIDWEB_ALLOW_ORIGINS;
+	}
+});

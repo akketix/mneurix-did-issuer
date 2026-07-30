@@ -20,6 +20,8 @@ import { createPublicKey } from "node:crypto";
 import type { KeyMaterial } from "@mneurix/shared";
 
 const FETCH_TIMEOUT_MS = 5000;
+/** Max did:web doc size (DoS cap — a foreign doc larger than this is rejected). */
+const MAX_DOC_BYTES = 1_000_000;
 
 /** Block literal private/loopback/link-local hostnames + localhost. (Does NOT
  * catch DNS-rebinding — a hostname resolving to a private IP — which is a
@@ -66,7 +68,12 @@ export async function resolveDidWebIssuerKey(
 	try {
 		const res = await fetchFn(docUrl, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), redirect: "error" });
 		if (!res.ok) return null;
-		const doc = (await res.json()) as DidWebDoc;
+		// Size cap (plan SSRF guard): reject an oversized did:web doc (DoS).
+		const contentLength = Number(res.headers.get("content-length") ?? 0);
+		if (contentLength > MAX_DOC_BYTES) return null;
+		const text = await res.text();
+		if (text.length > MAX_DOC_BYTES) return null;
+		const doc = JSON.parse(text) as DidWebDoc;
 		const vm = doc.verificationMethod.find((m) => m.id === `${issuerDid}#${kid}`);
 		if (!vm) return null;
 		const publicKeyPem = createPublicKey({ key: vm.publicKeyJwk, format: "jwk" }).export({ format: "pem", type: "spki" }) as string;
