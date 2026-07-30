@@ -55,6 +55,10 @@ export interface CreateAuthRequestInput {
 	/** Request an encrypted direct_post.jwt response (JWE ECDH-ES + A128GCM); the
 	 * verifier advertises a per-request ephemeral recipient public key. */
 	encrypted?: boolean;
+	/** Delivery transport: "openid4vp" (the openid4vp:// URI, default) or "dc_api"
+	 * (the W3C Digital Credentials API — the request is a JSON object for
+	 * navigator.credentials.get; the frontend relays the response to response_uri). */
+	transport?: "openid4vp" | "dc_api";
 }
 
 export interface AuthRequestResult {
@@ -65,6 +69,9 @@ export interface AuthRequestResult {
 	/** The client_metadata (encrypted-response params + ephemeral recipient JWK),
 	 * present only for encrypted (direct_post.jwt) requests. */
 	client_metadata?: Record<string, unknown>;
+	/** The DC API request object (for navigator.credentials.get), present only for
+	 * transport "dc_api". */
+	dc_api_request?: Record<string, unknown>;
 	/** The verifier session (nonce/state) for matching the response later. */
 	session: { nonce: string; state: string; responseUri: string; vct: string; claims: string[] };
 }
@@ -81,7 +88,7 @@ export function createAuthorizationRequest(issuerUrl: string, input: CreateAuthR
 			{ id: "sd_jwt_vc", format: "dc+sd-jwt", meta: { vct_values: [input.vct] }, claims: claims.map((c) => ({ path: [c] })) },
 		],
 	};
-	let responseMode: "direct_post" | "direct_post.jwt" = "direct_post";
+	let responseMode: "direct_post" | "direct_post.jwt" | "dc_api" | "dc_api.jwt" = "direct_post";
 	let responseUri = input.responseUri ?? `${issuerUrl}/openid4vp/response`;
 	let recipientPrivateKeyPem: string | undefined;
 	let clientMetadata: Record<string, unknown> | undefined;
@@ -100,6 +107,16 @@ export function createAuthorizationRequest(issuerUrl: string, input: CreateAuthR
 			vp_formats: { "dc+sd-jwt": { "sd-jwt_alg_values": ["EdDSA", "ES256"], "kb-jwt_alg_values": ["EdDSA", "ES256"] } },
 		};
 	}
+	if (input.transport === "dc_api") {
+		// W3C Digital Credentials API delivery: the verifier's web frontend passes the
+		// dc_api_request object to navigator.credentials.get({ digital: { protocol:
+		// "openid4vp", request: ... } }); the wallet returns the response via the DC API
+		// + the frontend relays it to response_uri (the receiver, unchanged).
+		responseMode = input.encrypted ? "dc_api.jwt" : "dc_api";
+	}
+	const dcApiRequest = input.transport === "dc_api"
+		? { response_type: "vp_token", response_mode: responseMode, client_id: clientId, nonce, state, dcql_query: dcqlQuery, response_uri: responseUri, ...(clientMetadata ? { client_metadata: clientMetadata } : {}) }
+		: undefined;
 	const params = new URLSearchParams({
 		response_type: "vp_token",
 		response_mode: responseMode,
@@ -123,7 +140,7 @@ export function createAuthorizationRequest(issuerUrl: string, input: CreateAuthR
 		...(recipientPrivateKeyPem ? { recipientPrivateKeyPem } : {}),
 	};
 	sessions.set(state, session);
-	return { uri, dcql_query: dcqlQuery, ...(clientMetadata ? { client_metadata: clientMetadata } : {}), session: { nonce, state, responseUri, vct: input.vct, claims } };
+	return { uri, dcql_query: dcqlQuery, ...(clientMetadata ? { client_metadata: clientMetadata } : {}), ...(dcApiRequest ? { dc_api_request: dcApiRequest } : {}), session: { nonce, state, responseUri, vct: input.vct, claims } };
 }
 
 /** Match an incoming wallet response to a verifier session (by state + nonce).
