@@ -9,6 +9,7 @@ import { jsonError } from "./errors";
 import { openApiDoc } from "./openapi";
 import { buildDidDocument, buildDidDocumentMulti, originFromDid, didFor, didHash, publicKeyJwkFromPem, type DidMethod } from "./did";
 import { loadOrCreateIssuerKey, rotateIssuerKey, getKeyByKid, knownKids, loadOrCreateP256IssuerKey } from "./keys";
+import { generateSelfSignedCert } from "./x509";
 import { putDid, getDid, setPublished } from "./store";
 import { loadOriginsFromEnv, originListFromUrls } from "./origins";
 import { resolveDid } from "./resolve";
@@ -41,6 +42,10 @@ const ISSUER_ORIGIN = process.env.MNEURIX_DID_ISSUER_ORIGIN ?? "did-issuer.mneur
 let issuerKey = loadOrCreateIssuerKey(process.env.MNEURIX_KEY_DIR);
 let p256Key = loadOrCreateP256IssuerKey(process.env.MNEURIX_KEY_DIR);
 const ISSUER_URL = (process.env.MNEURIX_DID_ISSUER_URL ?? "https://did-issuer.mneurix.example").replace(/\/+$/, "");
+// HAIP §6.1.1: the ES256 SD-JWT VC carries the issuer cert chain in `x5c`. v1
+// generates a self-signed DEV cert (exercises the x5c plumbing); prod replaces it
+// with an IACA-issued cert (procurement). Derived from the P-256 key at boot.
+p256Key.x5c = generateSelfSignedCert(p256Key, new URL(ISSUER_URL).host);
 const ISSUER_NAME = process.env.MNEURIX_ISSUER_NAME ?? "Mneurix";
 const issuerDid = didFor(ISSUER_ORIGIN);
 function currentVerificationMethod(): string {
@@ -87,7 +92,7 @@ app.get("/.well-known/jwt-vc-issuer", (c) => {
 		jwks: {
 			keys: [
 				{ ...edJwk, kid: issuerKey.kid, alg: "EdDSA" },
-				{ ...p256Key.jwk, kid: p256Key.kid, alg: "ES256" },
+				{ ...p256Key.jwk, kid: p256Key.kid, alg: "ES256", ...(p256Key.x5c ? { x5c: p256Key.x5c } : {}) },
 			],
 		},
 		vct_values: [DEFAULT_VCT],
