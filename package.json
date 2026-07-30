@@ -14,7 +14,7 @@
 	"scripts": {
 		"build": "tsc -b",
 		"typecheck": "tsc -b --noEmit",
-		"test": "tsx test/smoke.test.ts && tsx packages/sdk/test/sdk.test.ts && tsx services/did-issuer/test/did.test.ts && tsx services/did-issuer/test/resolve.test.ts && tsx services/did-issuer/test/vc-issue.test.ts && tsx services/did-issuer/test/rotate.test.ts && tsx services/did-issuer/test/verify.test.ts && tsx services/did-issuer/test/crypto-edge.test.ts && tsx services/did-issuer/test/store-persistence.test.ts && tsx packages/licensing/test/license.test.ts && tsx services/did-issuer/test/issuer-metadata-statuslist.test.ts && tsx services/did-issuer/test/sdjwt-ietf-status.test.ts && tsx services/did-issuer/test/hybrid-keys.test.ts",
+		"test": "tsx test/smoke.test.ts && tsx packages/sdk/test/sdk.test.ts && tsx services/did-issuer/test/did.test.ts && tsx services/did-issuer/test/resolve.test.ts && tsx services/did-issuer/test/vc-issue.test.ts && tsx services/did-issuer/test/rotate.test.ts && tsx services/did-issuer/test/verify.test.ts && tsx services/did-issuer/test/crypto-edge.test.ts && tsx services/did-issuer/test/store-persistence.test.ts && tsx packages/licensing/test/license.test.ts && tsx services/did-issuer/test/issuer-metadata-statuslist.test.ts && tsx services/did-issuer/test/sdjwt-ietf-status.test.ts && tsx services/did-issuer/test/hybrid-keys.test.ts && tsx services/did-issuer/test/sdjwt-es256.test.ts",
 		"smoke": "tsx test/smoke.test.ts"
 	},
 	"devDependencies": {
