@@ -16,6 +16,7 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
 import { expandKey, verifyOb3 } from "./vc-issue";
 import { verifySdJwtVc, verifySdJwtVcEs256 } from "./sdjwt";
+import { resolveDidWebIssuerKey } from "./didweb";
 import type { IssuerP256Key } from "./keys";
 import { getDid } from "./store";
 import { isKidRevoked } from "./revoked-kids";
@@ -30,14 +31,19 @@ function sha256B64url(input: string): string {
 	return Buffer.from(createHash("sha256").update(Buffer.from(input, "ascii")).digest()).toString("base64url");
 }
 
-/** Resolve the issuer's public KeyMaterial for `kid` from the did:web DID doc. */
-function resolveIssuerKey(issuerDid: string, kid: string): KeyMaterial | null {
+/** Resolve the issuer's public KeyMaterial for `kid`. First the LOCAL DID
+ * store (the did-issuer's own creds, fast, no network); on a miss, a
+ * cross-issuer did:web fetch (SSRF-safe, allow-listed) for foreign issuers. */
+async function resolveIssuerKey(issuerDid: string, kid: string): Promise<KeyMaterial | null> {
 	const stored = getDid(issuerDid);
-	if (!stored) return null;
-	const vm = stored.document.verificationMethod.find((m) => m.id === `${issuerDid}#${kid}`);
-	if (!vm) return null;
-	const publicKeyPem = createPublicKey({ key: vm.publicKeyJwk, format: "jwk" }).export({ format: "pem", type: "spki" }) as string;
-	return { privateKeyPem: "", publicKeyPem, kid };
+	if (stored) {
+		const vm = stored.document.verificationMethod.find((m) => m.id === `${issuerDid}#${kid}`);
+		if (vm) {
+			const publicKeyPem = createPublicKey({ key: vm.publicKeyJwk, format: "jwk" }).export({ format: "pem", type: "spki" }) as string;
+			return { privateKeyPem: "", publicKeyPem, kid };
+		}
+	}
+	return resolveDidWebIssuerKey(issuerDid, kid);
 }
 
 export interface VerifyInput {
@@ -120,7 +126,7 @@ export async function verifyPresentation(input: VerifyInput): Promise<VerifyResu
 		// `kid` may be the bare kid OR the full did:web#kid verificationMethod — accept both.
 		const kid = rawKid.includes("#") ? rawKid.slice(rawKid.lastIndexOf("#") + 1) : rawKid;
 
-		const issuerKey = resolveIssuerKey(issuerDid, kid);
+		const issuerKey = await resolveIssuerKey(issuerDid, kid);
 		if (!issuerKey) return { verified: false, status: "unavailable", kid, issuer: issuerDid, reason: "issuer key not resolvable" };
 
 		// Fail-closed: revoked signing key.
@@ -161,7 +167,7 @@ export async function verifyPresentation(input: VerifyInput): Promise<VerifyResu
 	const issuerDid = credential.issuer.id;
 	if (!kid) return { verified: false, status: "rejected", reason: "missing kid in verificationMethod" };
 
-	const issuerKey = resolveIssuerKey(issuerDid, kid);
+	const issuerKey = await resolveIssuerKey(issuerDid, kid);
 	if (!issuerKey) return { verified: false, status: "unavailable", kid, issuer: issuerDid, reason: "issuer key not resolvable" };
 
 	if (await isKidRevoked(kid)) return { verified: false, status: "revoked", kid, issuer: issuerDid, reason: "signing key revoked" };
