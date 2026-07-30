@@ -18,7 +18,7 @@ import { issueOb3 } from "./vc-issue";
 import { issueSdJwtVc, signIssuerJwt } from "./sdjwt";
 import { allocateOb3Status, allocateSdJwtStatus, getCredentialStatus, getEncodedStatusList } from "./status";
 import { createCredentialOffer, exchangePreAuthorizedCode, consumeAccessToken } from "./oid4vci";
-import { createAuthorizationRequest } from "./openid4vp";
+import { createAuthorizationRequest, resolveSession, peekKbJwtNonce, consumeSession } from "./openid4vp";
 import { revokeKid } from "./revoked-kids";
 import { requireOperator } from "./operatorAuth";
 import { verifyPresentation } from "./vc-verify";
@@ -444,6 +444,27 @@ app.post("/credentials", async (c) => {
 		alg: offer.alg,
 	}, issuerKey, p256Key);
 	return c.json({ format: "dc+sd-jwt", credential: result.credential }, 200);
+});
+
+// OID4VP response receiver (POST /openid4vp/response, wallet-facing, public):
+// the wallet POSTs the vp_token (SD-JWT VC + KB-JWT) + state (direct_post). The
+// receiver binds the presentation to the verifier session (state + the KB-JWT
+// nonce), then verifies the SD-JWT VC issuer signature + disclosures + the
+// KB-JWT holder binding (reuses verifyPresentation). EdDSA/did:web path; the
+// ES256/HTTPS-issuer verify path is a follow-up (fail-closed until then).
+app.post("/openid4vp/response", async (c) => {
+	const form = await c.req.parseBody();
+	const vpToken = typeof form.vp_token === "string" ? form.vp_token : null;
+	const state = typeof form.state === "string" ? form.state : null;
+	if (!vpToken || !state) return jsonError(c, 400, "INVALID_REQUEST", "vp_token + state are required");
+	const nonce = peekKbJwtNonce(vpToken);
+	if (!nonce) return jsonError(c, 401, "UNAUTHORIZED", "no KB-JWT / holder binding");
+	const session = resolveSession(state, nonce);
+	if (!session) return jsonError(c, 401, "UNAUTHORIZED", "no matching verifier session (state/nonce)");
+	const result = await verifyPresentation({ presentation: vpToken, requireKeyBinding: true, nonce: session.nonce, aud: session.clientId });
+	if (!result.verified) return jsonError(c, 401, "UNAUTHORIZED", `presentation rejected: ${result.reason ?? result.status}`);
+	consumeSession(state);
+	return c.json({ verified: true, subject: result.subject, issuer: result.issuer }, 200);
 });
 
 app.route("/v1", v1);

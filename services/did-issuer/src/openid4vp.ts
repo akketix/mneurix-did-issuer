@@ -117,6 +117,31 @@ export function resolveSession(state: string, nonce: string): VerifierSession | 
 	return s;
 }
 
+/** Peek the KB-JWT nonce from an SD-JWT VC presentation (the holder-bound
+ * nonce the wallet binds into the KB-JWT). Returns null if there is no KB-JWT
+ * (a non-holder-bound credential) — OpenID4VP requires the nonce binding, so
+ * the receiver rejects such a presentation. */
+export function peekKbJwtNonce(presentation: string): string | null {
+	const parts = presentation.split("~");
+	const last = parts[parts.length - 1];
+	if (!last || !last.includes(".")) return null;
+	try {
+		const payloadB64 = last.split(".")[1];
+		if (!payloadB64) return null;
+		const payload = JSON.parse(Buffer.from(payloadB64.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { nonce?: unknown };
+		return typeof payload.nonce === "string" ? payload.nonce : null;
+	} catch {
+		return null;
+	}
+}
+
+/** Mark a verifier session consumed (single-use, after a successful verify so a
+ * replayed presentation cannot be re-verified). No-op if the session is gone. */
+export function consumeSession(state: string): void {
+	const s = sessions.get(state);
+	if (s) s.consumed = true;
+}
+
 export function _resetOpenid4vpForTests(): void {
 	sessions.clear();
 }
