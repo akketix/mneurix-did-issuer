@@ -87,3 +87,12 @@ test("malformed input: a malformed JARM header (encrypted) -> 401 (not 500)", as
 	const status = await postEncrypted(sess.state, jwe);
 	assert.equal(status, 401, "malformed JARM -> 401 (fail-closed), not a 500");
 });
+
+test("malformed input: /v1/presentations:verify with a malformed VC -> 200 { verified: false } (not 500)", async () => {
+	const res = await app.request("/v1/presentations:verify", { method: "POST", headers: H, body: JSON.stringify({ presentation: "a.b.c" }) });
+	assert.equal(res.status, 200, "malformed VC -> 200 (clean rejection), not 500");
+	const body = (await res.json()) as { verified: boolean; status: string; reason?: string };
+	assert.equal(body.verified, false);
+	assert.equal(body.status, "rejected");
+	assert.match(body.reason ?? "", /malformed/);
+});

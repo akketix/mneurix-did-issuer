@@ -253,12 +253,17 @@ v1.post("/presentations:verify", async (c) => {
 	if (!body || body.presentation === undefined || body.presentation === null) {
 		return jsonError(c, 400, "BAD_REQUEST", "presentation is required");
 	}
-	const result = await verifyPresentation({
-		presentation: body.presentation as Parameters<typeof verifyPresentation>[0]["presentation"],
-		...(body.requireKeyBinding ? { requireKeyBinding: body.requireKeyBinding } : {}),
-		...(body.nonce ? { nonce: body.nonce } : {}),
-		...(body.aud ? { aud: body.aud } : {}),
-	});
+	let result: Awaited<ReturnType<typeof verifyPresentation>>;
+	try {
+		result = await verifyPresentation({
+			presentation: body.presentation as Parameters<typeof verifyPresentation>[0]["presentation"],
+			...(body.requireKeyBinding ? { requireKeyBinding: body.requireKeyBinding } : {}),
+			...(body.nonce ? { nonce: body.nonce } : {}),
+			...(body.aud ? { aud: body.aud } : {}),
+		});
+	} catch {
+		return c.json({ verified: false, status: "rejected", reason: "malformed presentation" });
+	}
 	return c.json(result);
 });
 
