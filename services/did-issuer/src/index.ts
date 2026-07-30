@@ -75,10 +75,18 @@ app.get("/.well-known/did.json", (c) => {
 
 // Public SD-JWT VC issuer metadata (draft-ietf-oauth-sd-jwt-vc §3): the issuer
 // origin + the issuer Ed25519 JWK (with kid + alg) for key discovery.
-// Default vct for Mneurix achievement credentials (the vct definition is
-// served at GET /vct/:name). Caller-supplied vcts are still accepted at
-// issuance; this advertises the default for wallet/verifier discovery.
-const DEFAULT_VCT = `${ISSUER_URL}/vct/achievement`;
+// vct taxonomy: the credential types this issuer supports + their claim
+// schemas (wallet/verifier discovery via /.well-known/jwt-vc-issuer vct_values +
+// GET /vct/:name). v1 ships a small set (achievement, competency, mastery); the
+// registry is advisory — issuance accepts any caller-supplied vct.
+const VCT_DEFINITIONS: Record<string, { name: string; description: string; claims: Record<string, string> }> = {
+	achievement: { name: "Mneurix Achievement", description: "A verifiable achievement/competency credential issued by Mneurix.", claims: { score: "number", agreement: "number", given_name: "string" } },
+	competency: { name: "Mneurix Competency", description: "A council-verified competency attestation.", claims: { score: "number", agreement: "number", criterionScores: "array" } },
+	mastery: { name: "Mneurix Mastery", description: "A mastery credential (a competency at mastery level).", claims: { score: "number", level: "string", achievedAt: "string" } },
+};
+function vctUri(name: string): string { return `${ISSUER_URL}/vct/${name}`; }
+function vctValues(): string[] { return Object.keys(VCT_DEFINITIONS).map(vctUri); }
+const DEFAULT_VCT = vctUri("achievement");
 
 // Public SD-JWT VC issuer metadata (draft-ietf-oauth-sd-jwt-vc): issuer origin
 // + the issuer Ed25519 JWK (kid + alg) for key discovery, + the supported vct
@@ -95,7 +103,7 @@ app.get("/.well-known/jwt-vc-issuer", (c) => {
 				{ ...p256Key.jwk, kid: p256Key.kid, alg: "ES256", ...(p256Key.x5c ? { x5c: p256Key.x5c } : {}) },
 			],
 		},
-		vct_values: [DEFAULT_VCT],
+		vct_values: vctValues(),
 	});
 });
 
@@ -104,13 +112,9 @@ app.get("/.well-known/jwt-vc-issuer", (c) => {
 // type vct taxonomy is a follow-up.
 app.get("/vct/:name", (c) => {
 	const name = c.req.param("name");
-	if (name !== "achievement") return c.json({ error: "unknown vct" }, 404);
-	return c.json({
-		vct: DEFAULT_VCT,
-		name: "Mneurix Achievement",
-		description: "A verifiable achievement/competency credential issued by Mneurix.",
-		claims: {},
-	});
+	const def = VCT_DEFINITIONS[name];
+	if (!def) return c.json({ error: "unknown vct" }, 404);
+	return c.json({ vct: vctUri(name), name: def.name, description: def.description, claims: def.claims });
 });
 
 // IETF Token Status List (draft-ietf-oauth-status-list): the status list for a
