@@ -17,6 +17,7 @@ import { randomUUID } from "node:crypto";
 import { issueOb3 } from "./vc-issue";
 import { issueSdJwtVc, signIssuerJwt } from "./sdjwt";
 import { allocateOb3Status, allocateSdJwtStatus, getCredentialStatus, getEncodedStatusList } from "./status";
+import { createCredentialOffer, exchangePreAuthorizedCode, consumeAccessToken } from "./oid4vci";
 import { revokeKid } from "./revoked-kids";
 import { requireOperator } from "./operatorAuth";
 import { verifyPresentation } from "./vc-verify";
@@ -307,6 +308,32 @@ v1.post("/vcs:issue", async (c) => {
 	return jsonError(c, 400, "BAD_REQUEST", "secure must be data-integrity or sd-jwt-vc");
 });
 
+// POST /v1/credential-offers (OID4VCI pre-authorized-code flow, service-token-
+// gated): an operator mints a credential offer bound to a subject/vct/claims.
+// The wallet consumes the returned credential_offer (the pre_authorized_code).
+v1.post("/credential-offers", async (c) => {
+	const body = (await c.req.json().catch(() => null)) as {
+		subjectId?: string;
+		vct?: string;
+		claims?: Record<string, unknown>;
+		selectivelyDisclosable?: string[];
+		alg?: "EdDSA" | "ES256";
+		holderJwk?: Record<string, string>;
+	} | null;
+	if (!body || !body.subjectId || !body.vct || !body.claims) {
+		return jsonError(c, 400, "BAD_REQUEST", "subjectId, vct, and claims are required");
+	}
+	const result = createCredentialOffer(ISSUER_URL, {
+		subject: body.subjectId,
+		vct: body.vct,
+		claims: body.claims,
+		...(body.selectivelyDisclosable ? { selectivelyDisclosable: body.selectivelyDisclosable } : {}),
+		...(body.alg ? { alg: body.alg } : {}),
+		...(body.holderJwk ? { holderJwk: body.holderJwk } : {}),
+	});
+	return c.json(result.credential_offer, 201);
+});
+
 // POST /v1/dids/:did/publish — atomic 2-phase publish to all configured (or
 // body-supplied) origins; 200 only on quorum confirm, 503 on quorum failure.
 v1.post("/dids/:did/publish", async (c) => {
@@ -324,6 +351,75 @@ v1.post("/dids/:did/publish", async (c) => {
 	}
 	setPublished(did, result.publishedTo, result.docHash);
 	return c.json({ did, publishedTo: result.publishedTo, quorum: result.quorum, confirmed: result.confirmed, docHash: result.docHash });
+});
+
+// OID4VCI: OAuth 2.0 Authorization Server metadata (RFC 8414) — the
+// pre-authorized-code grant + the token endpoint (wallet-facing, public).
+app.get("/.well-known/oauth-authorization-server", (c) => {
+	return c.json({
+		issuer: ISSUER_URL,
+		token_endpoint: `${ISSUER_URL}/oauth/token`,
+		token_endpoint_auth_methods_supported: ["none"],
+		grant_types_supported: ["urn:ietf:params:oauth:grant-type:pre-authorized_code"],
+		"pre-authorized_grant_anonymous_access_supported": true,
+	});
+});
+
+// OID4VCI: credential-issuer metadata — the credential endpoint + the supported
+// credential configurations (the default achievement vct, dc+sd-jwt, both algs).
+app.get("/.well-known/oauth-credential-issuer", (c) => {
+	return c.json({
+		credential_issuer: ISSUER_URL,
+		credential_endpoint: `${ISSUER_URL}/credentials`,
+		credential_configurations_supported: {
+			[DEFAULT_VCT]: {
+				format: "dc+sd-jwt",
+				scope: "MneurixAchievement",
+				cryptographic_binding_methods_supported: ["did:web", "jwk"],
+				credential_signing_alg_values_supported: ["EdDSA", "ES256"],
+				vct: DEFAULT_VCT,
+			},
+		},
+	});
+});
+
+// OID4VCI token endpoint: redeem a pre-authorized_code for an access token.
+app.post("/oauth/token", async (c) => {
+	const body = (await c.req.json().catch(() => null)) as {
+		grant_type?: string;
+		pre_authorized_code?: string;
+	} | null;
+	if (!body || body.grant_type !== "urn:ietf:params:oauth:grant-type:pre-authorized_code" || !body.pre_authorized_code) {
+		return jsonError(c, 400, "INVALID_REQUEST", "grant_type must be pre-authorized_code + pre_authorized_code required");
+	}
+	const result = exchangePreAuthorizedCode(body.pre_authorized_code);
+	if ("error" in result) return jsonError(c, 400, "INVALID_GRANT", result.error);
+	return c.json(result, 200);
+});
+
+// OID4VCI credential endpoint: the wallet posts the Bearer access token +
+// receives the SD-JWT VC. The access token is single-use + bound to the offer
+// (subject/vct/claims/alg minted by the operator). No service token here.
+app.post("/credentials", async (c) => {
+	const auth = c.req.header("authorization") ?? "";
+	const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
+	if (!token) return jsonError(c, 401, "UNAUTHORIZED", "missing Bearer access token");
+	const offer = consumeAccessToken(token);
+	if (!offer) return jsonError(c, 401, "UNAUTHORIZED", "invalid or expired access token");
+	const status = allocateSdJwtStatus(`${ISSUER_URL}/statuslists/revocation/1`, "revocation", undefined);
+	const iss = offer.alg === "ES256" ? ISSUER_URL : issuerDid;
+	const result = await issueSdJwtVc({
+		iss,
+		sub: offer.subject,
+		vct: offer.vct,
+		claims: offer.claims,
+		selectivelyDisclosable: offer.selectivelyDisclosable,
+		...(offer.holderJwk ? { holderJwk: offer.holderJwk } : {}),
+		status,
+		verificationMethod: currentVerificationMethod(),
+		alg: offer.alg,
+	}, issuerKey, p256Key);
+	return c.json({ format: "dc+sd-jwt", credential: result.credential }, 200);
 });
 
 app.route("/v1", v1);
