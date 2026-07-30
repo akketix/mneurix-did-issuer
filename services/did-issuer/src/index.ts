@@ -547,7 +547,7 @@ app.post("/openid4vp/response/:state", async (c) => {
 	// signed-JWT (a wallet-signed JWT whose payload carries vp_token + state + aud).
 	let vpToken: string | null = null;
 	let innerState: string | null = null;
-	if (!plaintext.includes("=") && !plaintext.includes("&") && plaintext.split(".").length === 3) {
+	if (!plaintext.includes("=") && !plaintext.includes("&") && !plaintext.includes("~") && plaintext.split(".").length === 3) {
 		// JARM signed-JWT layer (HAIP dc_api.jwt / direct_post.jwt JARM).
 		const jarmHeader = JSON.parse(Buffer.from(plaintext.split(".")[0]!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { jwk?: Record<string, string> };
 		if (!jarmHeader.jwk) return jsonError(c, 401, "UNAUTHORIZED", "JARM missing signing jwk");
