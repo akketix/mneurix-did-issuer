@@ -264,6 +264,9 @@ v1.post("/vcs:issue", async (c) => {
 		claims?: Record<string, unknown>;
 		selectivelyDisclosable?: string[];
 		holderJwk?: Record<string, string>;
+		/** Issuer-signed JWT algorithm: "EdDSA" (default, did:web) or "ES256"
+		 * (HAIP/EUDI wallet path, P-256 + x5c). */
+		alg?: "EdDSA" | "ES256";
 	} | null;
 	if (!body || !body.subjectId || !body.secure) {
 		return jsonError(c, 400, "BAD_REQUEST", "subjectId and secure are required (secure: data-integrity | sd-jwt-vc)");
@@ -296,7 +299,8 @@ v1.post("/vcs:issue", async (c) => {
 			...(body.holderJwk ? { holderJwk: body.holderJwk } : {}),
 			status,
 			verificationMethod: currentVerificationMethod(),
-		}, issuerKey);
+			...(body.alg ? { alg: body.alg } : {}),
+		}, issuerKey, p256Key);
 		return c.json({ credential: result.credential, format: "dc+sd-jwt", statusIndex: status.status_list.idx }, 201);
 	}
 
