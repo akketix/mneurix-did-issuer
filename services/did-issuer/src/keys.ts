@@ -129,8 +129,9 @@ export function signEs256Jwt(
 	key: IssuerP256Key,
 	kid: string,
 	typ: string,
+	x5c?: string[],
 ): string {
-	const header = { alg: "ES256", typ, kid };
+	const header: Record<string, unknown> = { alg: "ES256", typ, kid, ...(x5c ? { x5c } : {}) };
 	const headerB64 = b64url(Buffer.from(JSON.stringify(header)));
 	const payloadB64 = b64url(Buffer.from(JSON.stringify(payload)));
 	const signingInput = Buffer.from(headerB64 + "." + payloadB64, "ascii");

@@ -8,7 +8,7 @@ import { requireServiceToken } from "./serviceAuth";
 import { jsonError } from "./errors";
 import { openApiDoc } from "./openapi";
 import { buildDidDocument, buildDidDocumentMulti, originFromDid, didFor, didHash, publicKeyJwkFromPem, type DidMethod } from "./did";
-import { loadOrCreateIssuerKey, rotateIssuerKey, getKeyByKid, knownKids, loadOrCreateP256IssuerKey } from "./keys";
+import { loadOrCreateIssuerKey, rotateIssuerKey, getKeyByKid, knownKids, loadOrCreateP256IssuerKey, signEs256Jwt } from "./keys";
 import { generateSelfSignedCert } from "./x509";
 import { putDid, getDid, setPublished } from "./store";
 import { loadOriginsFromEnv, originListFromUrls } from "./origins";
@@ -123,13 +123,19 @@ app.get("/statuslists/:purpose/:id", async (c) => {
 	if (purpose !== "revocation" && purpose !== "refresh" && purpose !== "delisted") {
 		return c.json({ error: "invalid status purpose" }, 400);
 	}
-	const uri = `${ISSUER_URL}/statuslists/${purpose}/${c.req.param("id")}`;
+	const alg = c.req.query("alg") === "ES256" ? "ES256" : "EdDSA";
+	const base = `${ISSUER_URL}/statuslists/${purpose}/${c.req.param("id")}`;
+	const uri = alg === "ES256" ? `${base}?alg=ES256` : base;
 	const payload = {
 		sub: uri,
 		iat: Math.floor(Date.now() / 1000),
 		status_list: { bits: 1, vals: getEncodedStatusList(purpose) },
 	};
-	const jwt = await signIssuerJwt(payload, issuerKey, issuerKey.kid, "statuslist+jwt");
+	// HAIP §6.1: the status-list token for the ES256 path is ES256-signed + carries
+	// x5c; the Ed25519 token serves the did:web/self-sovereign path.
+	const jwt = alg === "ES256"
+		? signEs256Jwt(payload, p256Key, p256Key.kid, "statuslist+jwt", p256Key.x5c)
+		: await signIssuerJwt(payload, issuerKey, issuerKey.kid, "statuslist+jwt");
 	return c.body(jwt, 200, { "content-type": "application/statuslist+jwt" });
 });
 
@@ -279,7 +285,9 @@ v1.post("/vcs:issue", async (c) => {
 	if (!body || !body.subjectId || !body.secure) {
 		return jsonError(c, 400, "BAD_REQUEST", "subjectId and secure are required (secure: data-integrity | sd-jwt-vc)");
 	}
-	const statusListId = `${ISSUER_URL}/statuslists/revocation/1`;
+	const statusListId = body.alg === "ES256"
+		? `${ISSUER_URL}/statuslists/revocation/1?alg=ES256`
+		: `${ISSUER_URL}/statuslists/revocation/1`;
 
 	if (body.secure === "data-integrity") {
 		if (!body.achievement || !body.evidence) {
@@ -440,7 +448,8 @@ app.post("/credentials", async (c) => {
 	if (!token) return jsonError(c, 401, "UNAUTHORIZED", "missing Bearer access token");
 	const offer = consumeAccessToken(token);
 	if (!offer) return jsonError(c, 401, "UNAUTHORIZED", "invalid or expired access token");
-	const status = allocateSdJwtStatus(`${ISSUER_URL}/statuslists/revocation/1`, "revocation", undefined);
+	const oidcStatusListId = offer.alg === "ES256" ? `${ISSUER_URL}/statuslists/revocation/1?alg=ES256` : `${ISSUER_URL}/statuslists/revocation/1`;
+	const status = allocateSdJwtStatus(oidcStatusListId, "revocation", undefined);
 	const iss = offer.alg === "ES256" ? ISSUER_URL : issuerDid;
 	const result = await issueSdJwtVc({
 		iss,
