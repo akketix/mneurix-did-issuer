@@ -96,3 +96,10 @@ test("malformed input: /v1/presentations:verify with a malformed VC -> 200 { ver
 	assert.equal(body.status, "rejected");
 	assert.match(body.reason ?? "", /malformed/);
 });
+
+test("malformed input: /v1/vcs:issue with a selectivelyDisclosable claim not in claims -> 400 (not 500)", async () => {
+	const res = await app.request("/v1/vcs:issue", { method: "POST", headers: H, body: JSON.stringify({ subjectId: SUBJECT, secure: "sd-jwt-vc", vct: VCT, claims: { score: 0.9 }, selectivelyDisclosable: ["nonexistent-claim"], alg: "ES256" }) });
+	assert.equal(res.status, 400, "bad selectivelyDisclosable -> 400 (clean rejection), not 500");
+	const body = (await res.json()) as { error: { code: string; message: string } };
+	assert.match(body.error.message, /cannot issue/i);
+});

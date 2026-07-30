@@ -315,17 +315,22 @@ v1.post("/vcs:issue", async (c) => {
 		}
 		const selectivelyDisclosable = body.selectivelyDisclosable ?? [];
 		const status = allocateSdJwtStatus(statusListId, "revocation", undefined);
-		const result = await issueSdJwtVc({
-			iss: body.alg === "ES256" ? ISSUER_URL : issuerDid,
-			sub: body.subjectId,
-			vct: body.vct,
-			claims: body.claims,
-			selectivelyDisclosable,
-			...(body.holderJwk ? { holderJwk: body.holderJwk } : {}),
-			status,
-			verificationMethod: currentVerificationMethod(),
-			...(body.alg ? { alg: body.alg } : {}),
-		}, issuerKey, p256Key);
+		let result: Awaited<ReturnType<typeof issueSdJwtVc>>;
+		try {
+			result = await issueSdJwtVc({
+				iss: body.alg === "ES256" ? ISSUER_URL : issuerDid,
+				sub: body.subjectId,
+				vct: body.vct,
+				claims: body.claims,
+				selectivelyDisclosable,
+				...(body.holderJwk ? { holderJwk: body.holderJwk } : {}),
+				status,
+				verificationMethod: currentVerificationMethod(),
+				...(body.alg ? { alg: body.alg } : {}),
+			}, issuerKey, p256Key);
+		} catch (e) {
+			return jsonError(c, 400, "BAD_REQUEST", `cannot issue: ${(e as Error).message}`);
+		}
 		return c.json({ credential: result.credential, format: "dc+sd-jwt", statusIndex: status.status_list.idx }, 201);
 	}
 
@@ -472,17 +477,22 @@ app.post("/credentials", async (c) => {
 	const oidcStatusListId = offer.alg === "ES256" ? `${ISSUER_URL}/statuslists/revocation/1?alg=ES256` : `${ISSUER_URL}/statuslists/revocation/1`;
 	const status = allocateSdJwtStatus(oidcStatusListId, "revocation", undefined);
 	const iss = offer.alg === "ES256" ? ISSUER_URL : issuerDid;
-	const result = await issueSdJwtVc({
-		iss,
-		sub: offer.subject,
-		vct: offer.vct,
-		claims: offer.claims,
-		selectivelyDisclosable: offer.selectivelyDisclosable,
-		...(offer.holderJwk ? { holderJwk: offer.holderJwk } : {}),
-		status,
-		verificationMethod: currentVerificationMethod(),
-		alg: offer.alg,
-	}, issuerKey, p256Key);
+	let result: Awaited<ReturnType<typeof issueSdJwtVc>>;
+	try {
+		result = await issueSdJwtVc({
+			iss,
+			sub: offer.subject,
+			vct: offer.vct,
+			claims: offer.claims,
+			selectivelyDisclosable: offer.selectivelyDisclosable,
+			...(offer.holderJwk ? { holderJwk: offer.holderJwk } : {}),
+			status,
+			verificationMethod: currentVerificationMethod(),
+			alg: offer.alg,
+		}, issuerKey, p256Key);
+	} catch (e) {
+		return jsonError(c, 502, "ISSUER_ERROR", `cannot issue credential: ${(e as Error).message}`);
+	}
 	return c.json({ format: "dc+sd-jwt", credential: result.credential }, 200);
 });
 
