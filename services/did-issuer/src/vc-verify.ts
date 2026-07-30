@@ -15,7 +15,8 @@
  * Purity: node:crypto + vc-issue + sdjwt + store + revoked-kids + status. */
 import { createHash, createPublicKey } from "node:crypto";
 import { expandKey, verifyOb3 } from "./vc-issue";
-import { verifySdJwtVc } from "./sdjwt";
+import { verifySdJwtVc, verifySdJwtVcEs256 } from "./sdjwt";
+import type { IssuerP256Key } from "./keys";
 import { getDid } from "./store";
 import { isKidRevoked } from "./revoked-kids";
 import { getCredentialStatus } from "./status";
@@ -165,4 +166,40 @@ export async function verifyPresentation(input: VerifyInput): Promise<VerifyResu
 	}
 
 	return { verified: true, status, kid, issuer: issuerDid, subject: credential.credentialSubject.id };
+}
+
+/** Verify an ES256 (P-256) SD-JWT VC presentation presented to the did-issuer's
+ * own OpenID4VP receiver -- the HAIP/EUDI wallet-path mirror of the EdDSA/did:web
+ * SD-JWT branch in verifyPresentation. The issuer key is the in-process P-256 key
+ * (the did-issuer verifying its own ES256 credentials, iss = HTTPS issuer).
+ * KB-JWT holder binding pins Ed25519 (OKP/Ed25519) cnf.jwk, same as the EdDSA path. */
+export async function verifyEs256Presentation(
+	presentation: string,
+	p256Key: IssuerP256Key,
+	opts: { requireKeyBinding?: boolean; nonce?: string; aud?: string },
+): Promise<VerifyResult> {
+	const tildeParts = presentation.split("~");
+	const issuerJwt = tildeParts[0]!;
+	const last = tildeParts[tildeParts.length - 1]!;
+	const kbJwt = last && last.includes(".") ? last : null;
+	const disclosures = tildeParts.slice(1, kbJwt ? -1 : -1);
+	const jwtParts = issuerJwt.split(".");
+	if (jwtParts.length !== 3) return { verified: false, status: "rejected", reason: "malformed issuer JWT" };
+	const header = JSON.parse(b64urlDecode(jwtParts[0]!).toString("utf8")) as { alg?: string; kid?: string };
+	if (header.alg !== "ES256") return { verified: false, status: "rejected", reason: "not an ES256 SD-JWT VC" };
+	const payload = JSON.parse(b64urlDecode(jwtParts[1]!).toString("utf8")) as { iss?: string; sub?: string; cnf?: { jwk?: Record<string, string> } };
+	const sdJwtWithoutKb = `${issuerJwt}~${disclosures.join("~")}${disclosures.length > 0 ? "~" : ""}`;
+	const result = await verifySdJwtVcEs256(kbJwt ? sdJwtWithoutKb : presentation, p256Key);
+	if (!result.signatureValid) return { verified: false, status: "rejected", ...(payload.iss ? { issuer: payload.iss } : {}), ...(payload.sub ? { subject: payload.sub } : {}), reason: "issuer signature invalid" };
+	if (!result.allDisclosuresReferenced) return { verified: false, status: "rejected", ...(payload.iss ? { issuer: payload.iss } : {}), ...(payload.sub ? { subject: payload.sub } : {}), reason: "unreferenced disclosure (RFC 9901 §7.1)" };
+	if (opts.requireKeyBinding && !kbJwt) return { verified: false, status: "rejected", ...(payload.iss ? { issuer: payload.iss } : {}), ...(payload.sub ? { subject: payload.sub } : {}), reason: "key binding required but absent" };
+	if (kbJwt) {
+		const holderJwk = payload.cnf?.jwk;
+		if (!holderJwk) return { verified: false, status: "rejected", ...(payload.iss ? { issuer: payload.iss } : {}), reason: "KB-JWT present without cnf.jwk" };
+		if (holderJwk.kty !== "OKP" || holderJwk.crv !== "Ed25519") return { verified: false, status: "rejected", ...(payload.iss ? { issuer: payload.iss } : {}), reason: "cnf.jwk must be Ed25519 (OKP/Ed25519)" };
+		const expectedSdHash = sha256B64url(sdJwtWithoutKb);
+		const kbOk = await verifyKbJwt(kbJwt, holderJwk, expectedSdHash, opts.nonce, opts.aud);
+		if (!kbOk) return { verified: false, status: "rejected", ...(payload.iss ? { issuer: payload.iss } : {}), ...(payload.sub ? { subject: payload.sub } : {}), reason: "KB-JWT invalid" };
+	}
+	return { verified: true, status: "valid", ...(payload.iss ? { issuer: payload.iss } : {}), ...(payload.sub ? { subject: payload.sub } : {}) };
 }
