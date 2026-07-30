@@ -19,7 +19,7 @@ import { issueOb3 } from "./vc-issue";
 import { issueSdJwtVc, signIssuerJwt } from "./sdjwt";
 import { allocateOb3Status, allocateSdJwtStatus, getCredentialStatus, getEncodedStatusList } from "./status";
 import { createCredentialOffer, exchangePreAuthorizedCode, consumeAccessToken } from "./oid4vci";
-import { createAuthorizationRequest, resolveSession, peekKbJwtNonce, consumeSession, getSessionByState } from "./openid4vp";
+import { createAuthorizationRequest, createSignedAuthorizationRequest, resolveSession, peekKbJwtNonce, consumeSession, getSessionByState, getRequestObject } from "./openid4vp";
 import { decryptResponse } from "./jwe";
 import { revokeKid } from "./revoked-kids";
 import { requireOperator } from "./operatorAuth";
@@ -361,18 +361,27 @@ v1.post("/presentations/request", async (c) => {
 		responseUri?: string;
 		encrypted?: boolean;
 		transport?: "openid4vp" | "dc_api" | "openid4vp-redirect";
+		/** Sign the request (JAR) + use the x509_hash client-id scheme (HAIP §5). */
+		signed?: boolean;
 	} | null;
 	if (!body || !body.vct) {
 		return jsonError(c, 400, "BAD_REQUEST", "vct is required");
 	}
-	const result = createAuthorizationRequest(ISSUER_URL, {
-		vct: body.vct,
-		...(body.claims ? { claims: body.claims } : {}),
-		...(body.clientId ? { clientId: body.clientId } : {}),
-		...(body.responseUri ? { responseUri: body.responseUri } : {}),
-		...(body.encrypted ? { encrypted: body.encrypted } : {}),
-		...(body.transport ? { transport: body.transport } : {}),
-	});
+	const result = body.signed
+		? createSignedAuthorizationRequest(ISSUER_URL, p256Key, {
+			vct: body.vct,
+			...(body.claims ? { claims: body.claims } : {}),
+			...(body.clientId ? { clientId: body.clientId } : {}),
+			...(body.responseUri ? { responseUri: body.responseUri } : {}),
+		})
+		: createAuthorizationRequest(ISSUER_URL, {
+			vct: body.vct,
+			...(body.claims ? { claims: body.claims } : {}),
+			...(body.clientId ? { clientId: body.clientId } : {}),
+			...(body.responseUri ? { responseUri: body.responseUri } : {}),
+			...(body.encrypted ? { encrypted: body.encrypted } : {}),
+			...(body.transport ? { transport: body.transport } : {}),
+		});
 	return c.json(result, 201);
 });
 
@@ -538,6 +547,15 @@ app.post("/openid4vp/response/:state", async (c) => {
 	if (!result.verified) return jsonError(c, 401, "UNAUTHORIZED", `presentation rejected: ${result.reason ?? result.status}`);
 	consumeSession(state);
 	return c.json({ verified: true, subject: result.subject, issuer: result.issuer }, 200);
+});
+
+// JAR: the signed Request Object is hosted at request_uri (the wallet fetches it
+// via GET). Served as application/oauth-authz-req+jwt; the wallet verifies the
+// ES256+x5c signature + uses the request params inside.
+app.get("/openid4vp/request/:id", (c) => {
+	const jwt = getRequestObject(c.req.param("id"));
+	if (!jwt) return jsonError(c, 404, "NOT_FOUND", "no signed request object for that id");
+	return c.body(jwt, 200, { "content-type": "application/oauth-authz-req+jwt" });
 });
 
 app.route("/v1", v1);
