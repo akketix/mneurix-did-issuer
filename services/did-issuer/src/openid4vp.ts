@@ -183,7 +183,13 @@ export function resolveSession(state: string, nonce: string): VerifierSession | 
 /** Look up a verifier session by state (for the encrypted direct_post.jwt
  * receiver, where the state is carried in the response_uri path). */
 export function getSessionByState(state: string): VerifierSession | null {
-	return sessions.get(state) ?? null;
+	const s = sessions.get(state);
+	if (!s || s.consumed) return null;
+	if (Date.now() - s.createdAt > SESSION_TTL_MS) {
+		sessions.delete(state);
+		return null;
+	}
+	return s;
 }
 
 /** Peek the KB-JWT nonce from an SD-JWT VC presentation (the holder-bound
