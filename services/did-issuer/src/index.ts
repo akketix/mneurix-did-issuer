@@ -21,7 +21,7 @@ import { createCredentialOffer, exchangePreAuthorizedCode, consumeAccessToken } 
 import { createAuthorizationRequest, resolveSession, peekKbJwtNonce, consumeSession } from "./openid4vp";
 import { revokeKid } from "./revoked-kids";
 import { requireOperator } from "./operatorAuth";
-import { verifyPresentation } from "./vc-verify";
+import { verifyPresentation, verifyEs256Presentation } from "./vc-verify";
 import type { Achievement, BadgeEvidence, StatusPurpose } from "@mneurix/shared";
 import { assertRestEncryptionInProd } from "@mneurix/shared";
 
@@ -293,7 +293,7 @@ v1.post("/vcs:issue", async (c) => {
 		const selectivelyDisclosable = body.selectivelyDisclosable ?? [];
 		const status = allocateSdJwtStatus(statusListId, "revocation", undefined);
 		const result = await issueSdJwtVc({
-			iss: issuerDid,
+			iss: body.alg === "ES256" ? ISSUER_URL : issuerDid,
 			sub: body.subjectId,
 			vct: body.vct,
 			claims: body.claims,
@@ -461,7 +461,11 @@ app.post("/openid4vp/response", async (c) => {
 	if (!nonce) return jsonError(c, 401, "UNAUTHORIZED", "no KB-JWT / holder binding");
 	const session = resolveSession(state, nonce);
 	if (!session) return jsonError(c, 401, "UNAUTHORIZED", "no matching verifier session (state/nonce)");
-	const result = await verifyPresentation({ presentation: vpToken, requireKeyBinding: true, nonce: session.nonce, aud: session.clientId });
+	const issuerJwt = vpToken.split("~")[0]!;
+	const hdr = JSON.parse(Buffer.from(issuerJwt.split(".")[0]!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { alg?: string };
+	const result = hdr.alg === "ES256"
+		? await verifyEs256Presentation(vpToken, p256Key, { requireKeyBinding: true, nonce: session.nonce, aud: session.clientId })
+		: await verifyPresentation({ presentation: vpToken, requireKeyBinding: true, nonce: session.nonce, aud: session.clientId });
 	if (!result.verified) return jsonError(c, 401, "UNAUTHORIZED", `presentation rejected: ${result.reason ?? result.status}`);
 	consumeSession(state);
 	return c.json({ verified: true, subject: result.subject, issuer: result.issuer }, 200);

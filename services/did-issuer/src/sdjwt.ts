@@ -23,7 +23,7 @@
  * Recursive + array-element disclosures are a future hardening (RFC 9901 §4.2.6).
  *
  * Purity: node:crypto + @noble/ed25519. */
-import { createHash, createSign, randomBytes } from "node:crypto";
+import { createHash, createSign, createPublicKey, verify, randomBytes } from "node:crypto";
 import { signAsync, verifyAsync } from "@noble/ed25519";
 import { expandKey } from "./vc-issue";
 import type { KeyMaterial } from "@mneurix/shared";
@@ -195,9 +195,11 @@ export async function signIssuerJwt(
 	return headerB64 + "." + payloadB64 + "." + b64url(signature);
 }
 
-export async function verifySdJwtVc(credential: string, keys: KeyMaterial): Promise<SdJwtVerifyResult> {
-	const { publicKey } = expandKey(keys);
-	// SD-JWT = <Issuer-JWT>~<D.1>~...~<D.N>~  → split on "~".
+async function verifySdJwtVcImpl(
+	credential: string,
+	sigVerify: (signingInput: Buffer, sigB64: string) => Promise<boolean>,
+): Promise<SdJwtVerifyResult> {
+	// SD-JWT = <Issuer-JWT>~<D.1>~...~<D.N>~  -> split on "~".
 	const parts = credential.split("~");
 	const issuerJwt = parts[0]!;
 	const disclosureStrings = parts.slice(1, -1); // drop the trailing empty element
@@ -209,10 +211,8 @@ export async function verifySdJwtVc(credential: string, keys: KeyMaterial): Prom
 	const [headerB64, payloadB64, sigB64] = jwtParts as [string, string, string];
 	const header = JSON.parse(b64urlDecode(headerB64).toString("utf8")) as Record<string, unknown>;
 	const payload = JSON.parse(b64urlDecode(payloadB64).toString("utf8")) as Record<string, unknown>;
-	const signature = new Uint8Array(b64urlDecode(sigB64));
-
 	const signingInput = Buffer.from(`${headerB64}.${payloadB64}`, "ascii");
-	const signatureValid = await verifyAsync(signature, signingInput, publicKey);
+	const signatureValid = await sigVerify(signingInput, sigB64);
 
 	// Process disclosures: compute hash, match against _sd, insert claim.
 	const sdArray = Array.isArray(payload._sd) ? (payload._sd as string[]) : [];
@@ -236,4 +236,22 @@ export async function verifySdJwtVc(credential: string, keys: KeyMaterial): Prom
 	delete processed._sd_alg;
 
 	return { signatureValid, header, processedPayload: processed, disclosures, allDisclosuresReferenced: allReferenced };
+}
+
+export async function verifySdJwtVc(credential: string, keys: KeyMaterial): Promise<SdJwtVerifyResult> {
+	const { publicKey } = expandKey(keys);
+	return verifySdJwtVcImpl(credential, async (signingInput, sigB64) => {
+		return verifyAsync(new Uint8Array(b64urlDecode(sigB64)), signingInput, publicKey);
+	});
+}
+
+/** Verify an ES256 (P-256) SD-JWT VC issuer-JWT signature + disclosures -- the
+ * HAIP/EUDI wallet-path mirror of verifySdJwtVc (Ed25519). The issuer key is the
+ * in-process P-256 key (the did-issuer verifying its own ES256 credentials,
+ * iss = HTTPS issuer). KB-JWT holder binding is checked by the caller. */
+export async function verifySdJwtVcEs256(credential: string, p256Key: IssuerP256Key): Promise<SdJwtVerifyResult> {
+	return verifySdJwtVcImpl(credential, async (signingInput, sigB64) => {
+		const pub = createPublicKey({ key: p256Key.jwk, format: "jwk" });
+		return verify("SHA256", signingInput, { key: pub, dsaEncoding: "ieee-p1363" }, b64urlDecode(sigB64));
+	});
 }
