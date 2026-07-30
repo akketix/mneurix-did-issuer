@@ -513,12 +513,18 @@ app.post("/openid4vp/response", async (c) => {
 	if (!session) return jsonError(c, 401, "UNAUTHORIZED", "no matching verifier session (state/nonce)");
 	let lastResult: { verified: boolean; subject?: string; issuer?: string; reason?: string; status: string } | undefined;
 	for (const vpToken of vpTokens) {
-		const issuerJwt = vpToken.split("~")[0]!;
-		const hdr = JSON.parse(Buffer.from(issuerJwt.split(".")[0]!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { alg?: string };
-		lastResult = hdr.alg === "ES256"
-			? await verifyEs256Presentation(vpToken, p256Key, { requireKeyBinding: true, nonce: session.nonce, aud: session.clientId })
-			: await verifyPresentation({ presentation: vpToken, requireKeyBinding: true, nonce: session.nonce, aud: session.clientId });
-		if (!lastResult.verified) return jsonError(c, 401, "UNAUTHORIZED", `presentation rejected: ${lastResult.reason ?? lastResult.status}`);
+		let r: { verified: boolean; subject?: string; issuer?: string; reason?: string; status: string };
+		try {
+			const issuerJwt = vpToken.split("~")[0]!;
+			const hdr = JSON.parse(Buffer.from(issuerJwt.split(".")[0]!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { alg?: string };
+			r = hdr.alg === "ES256"
+				? await verifyEs256Presentation(vpToken, p256Key, { requireKeyBinding: true, nonce: session.nonce, aud: session.clientId })
+				: await verifyPresentation({ presentation: vpToken, requireKeyBinding: true, nonce: session.nonce, aud: session.clientId });
+		} catch {
+			return jsonError(c, 401, "UNAUTHORIZED", "malformed presentation");
+		}
+		if (!r.verified) return jsonError(c, 401, "UNAUTHORIZED", `presentation rejected: ${r.reason ?? r.status}`);
+		lastResult = r;
 	}
 	consumeSession(state);
 	return c.json({ verified: true, credentials: vpTokens.length, ...(lastResult?.subject ? { subject: lastResult.subject } : {}), ...(lastResult?.issuer ? { issuer: lastResult.issuer } : {}) }, 200);
@@ -549,14 +555,18 @@ app.post("/openid4vp/response/:state", async (c) => {
 	let innerState: string | null = null;
 	if (!plaintext.includes("=") && !plaintext.includes("&") && !plaintext.includes("~") && plaintext.split(".").length === 3) {
 		// JARM signed-JWT layer (HAIP dc_api.jwt / direct_post.jwt JARM).
-		const jarmHeader = JSON.parse(Buffer.from(plaintext.split(".")[0]!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { jwk?: Record<string, string> };
-		if (!jarmHeader.jwk) return jsonError(c, 401, "UNAUTHORIZED", "JARM missing signing jwk");
-		const jarm = await verifyJwsWithJwk(plaintext, jarmHeader.jwk);
-		if (!jarm.valid) return jsonError(c, 401, "UNAUTHORIZED", "JARM signature invalid");
-		const jp = (jarm.payload ?? {}) as { vp_token?: string; state?: string; aud?: string };
-		vpToken = typeof jp.vp_token === "string" ? jp.vp_token : null;
-		innerState = typeof jp.state === "string" ? jp.state : null;
-		if (jp.aud !== session.clientId) return jsonError(c, 401, "UNAUTHORIZED", "JARM aud does not match the verifier client_id");
+		try {
+			const jarmHeader = JSON.parse(Buffer.from(plaintext.split(".")[0]!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { jwk?: Record<string, string> };
+			if (!jarmHeader.jwk) return jsonError(c, 401, "UNAUTHORIZED", "JARM missing signing jwk");
+			const jarm = await verifyJwsWithJwk(plaintext, jarmHeader.jwk);
+			if (!jarm.valid) return jsonError(c, 401, "UNAUTHORIZED", "JARM signature invalid");
+			const jp = (jarm.payload ?? {}) as { vp_token?: string; state?: string; aud?: string };
+			vpToken = typeof jp.vp_token === "string" ? jp.vp_token : null;
+			innerState = typeof jp.state === "string" ? jp.state : null;
+			if (jp.aud !== session.clientId) return jsonError(c, 401, "UNAUTHORIZED", "JARM aud does not match the verifier client_id");
+		} catch {
+			return jsonError(c, 401, "UNAUTHORIZED", "malformed JARM response");
+		}
 	} else {
 		const inner = new URLSearchParams(plaintext);
 		vpToken = inner.get("vp_token");
@@ -564,11 +574,16 @@ app.post("/openid4vp/response/:state", async (c) => {
 	}
 	if (!vpToken || !innerState) return jsonError(c, 400, "INVALID_REQUEST", "decrypted response missing vp_token + state");
 	if (innerState !== state) return jsonError(c, 401, "UNAUTHORIZED", "decrypted state does not match the response_uri state");
-	const issuerJwt = vpToken.split("~")[0]!;
-	const hdr = JSON.parse(Buffer.from(issuerJwt.split(".")[0]!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { alg?: string };
-	const result = hdr.alg === "ES256"
-		? await verifyEs256Presentation(vpToken, p256Key, { requireKeyBinding: true, nonce: session.nonce, aud: session.clientId })
-		: await verifyPresentation({ presentation: vpToken, requireKeyBinding: true, nonce: session.nonce, aud: session.clientId });
+	let result: { verified: boolean; subject?: string; issuer?: string; reason?: string; status: string };
+	try {
+		const issuerJwt = vpToken.split("~")[0]!;
+		const hdr = JSON.parse(Buffer.from(issuerJwt.split(".")[0]!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { alg?: string };
+		result = hdr.alg === "ES256"
+			? await verifyEs256Presentation(vpToken, p256Key, { requireKeyBinding: true, nonce: session.nonce, aud: session.clientId })
+			: await verifyPresentation({ presentation: vpToken, requireKeyBinding: true, nonce: session.nonce, aud: session.clientId });
+	} catch {
+		return jsonError(c, 401, "UNAUTHORIZED", "malformed presentation");
+	}
 	if (!result.verified) return jsonError(c, 401, "UNAUTHORIZED", `presentation rejected: ${result.reason ?? result.status}`);
 	consumeSession(state);
 	return c.json({ verified: true, subject: result.subject, issuer: result.issuer }, 200);
