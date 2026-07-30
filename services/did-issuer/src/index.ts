@@ -352,7 +352,7 @@ v1.post("/presentations/request", async (c) => {
 		clientId?: string;
 		responseUri?: string;
 		encrypted?: boolean;
-		transport?: "openid4vp" | "dc_api";
+		transport?: "openid4vp" | "dc_api" | "openid4vp-redirect";
 	} | null;
 	if (!body || !body.vct) {
 		return jsonError(c, 400, "BAD_REQUEST", "vct is required");

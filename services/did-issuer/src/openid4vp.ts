@@ -58,7 +58,7 @@ export interface CreateAuthRequestInput {
 	/** Delivery transport: "openid4vp" (the openid4vp:// URI, default) or "dc_api"
 	 * (the W3C Digital Credentials API — the request is a JSON object for
 	 * navigator.credentials.get; the frontend relays the response to response_uri). */
-	transport?: "openid4vp" | "dc_api";
+	transport?: "openid4vp" | "dc_api" | "openid4vp-redirect";
 }
 
 export interface AuthRequestResult {
@@ -72,6 +72,9 @@ export interface AuthRequestResult {
 	/** The DC API request object (for navigator.credentials.get), present only for
 	 * transport "dc_api". */
 	dc_api_request?: Record<string, unknown>;
+	/** The claimed-https redirect URL (transport "openid4vp-redirect") — the request
+	 * params in an https URL for universal-links/app-links wallet invocation. */
+	redirect_url?: string;
 	/** The verifier session (nonce/state) for matching the response later. */
 	session: { nonce: string; state: string; responseUri: string; vct: string; claims: string[] };
 }
@@ -128,6 +131,7 @@ export function createAuthorizationRequest(issuerUrl: string, input: CreateAuthR
 		...(clientMetadata ? { client_metadata: JSON.stringify(clientMetadata) } : {}),
 	});
 	const uri = `openid4vp://?${params.toString()}`;
+	const redirectUrl = input.transport === "openid4vp-redirect" ? `${issuerUrl}/openid4vp?${params.toString()}` : undefined;
 	const session: VerifierSession = {
 		nonce,
 		state,
@@ -140,7 +144,7 @@ export function createAuthorizationRequest(issuerUrl: string, input: CreateAuthR
 		...(recipientPrivateKeyPem ? { recipientPrivateKeyPem } : {}),
 	};
 	sessions.set(state, session);
-	return { uri, dcql_query: dcqlQuery, ...(clientMetadata ? { client_metadata: clientMetadata } : {}), ...(dcApiRequest ? { dc_api_request: dcApiRequest } : {}), session: { nonce, state, responseUri, vct: input.vct, claims } };
+	return { uri, dcql_query: dcqlQuery, ...(clientMetadata ? { client_metadata: clientMetadata } : {}), ...(dcApiRequest ? { dc_api_request: dcApiRequest } : {}), ...(redirectUrl ? { redirect_url: redirectUrl } : {}), session: { nonce, state, responseUri, vct: input.vct, claims } };
 }
 
 /** Match an incoming wallet response to a verifier session (by state + nonce).
