@@ -8,7 +8,7 @@ import { requireServiceToken } from "./serviceAuth";
 import { jsonError } from "./errors";
 import { openApiDoc } from "./openapi";
 import { buildDidDocument, buildDidDocumentMulti, originFromDid, didFor, didHash, publicKeyJwkFromPem, type DidMethod } from "./did";
-import { loadOrCreateIssuerKey, rotateIssuerKey, getKeyByKid, knownKids } from "./keys";
+import { loadOrCreateIssuerKey, rotateIssuerKey, getKeyByKid, knownKids, loadOrCreateP256IssuerKey } from "./keys";
 import { putDid, getDid, setPublished } from "./store";
 import { loadOriginsFromEnv, originListFromUrls } from "./origins";
 import { resolveDid } from "./resolve";
@@ -36,6 +36,7 @@ if (
 
 const ISSUER_ORIGIN = process.env.MNEURIX_DID_ISSUER_ORIGIN ?? "did-issuer.mneurix.example";
 let issuerKey = loadOrCreateIssuerKey(process.env.MNEURIX_KEY_DIR);
+let p256Key = loadOrCreateP256IssuerKey(process.env.MNEURIX_KEY_DIR);
 const ISSUER_URL = (process.env.MNEURIX_DID_ISSUER_URL ?? "https://did-issuer.mneurix.example").replace(/\/+$/, "");
 const ISSUER_NAME = process.env.MNEURIX_ISSUER_NAME ?? "Mneurix";
 const issuerDid = didFor(ISSUER_ORIGIN);
@@ -75,10 +76,17 @@ const DEFAULT_VCT = `${ISSUER_URL}/vct/achievement`;
 // + the issuer Ed25519 JWK (kid + alg) for key discovery, + the supported vct
 // values (wallet/verifier discovery of the credential type).
 app.get("/.well-known/jwt-vc-issuer", (c) => {
-	const jwk = publicKeyJwkFromPem(issuerKey.publicKeyPem);
+	const edJwk = publicKeyJwkFromPem(issuerKey.publicKeyPem);
 	return c.json({
 		issuer: ISSUER_URL,
-		jwks: { keys: [{ ...jwk, kid: issuerKey.kid, alg: "EdDSA" }] },
+		// Hybrid key model: Ed25519/EdDSA (did:web, self-sovereign) + P-256/ES256
+		// (HAIP/EUDI wallet path). Wallets pick the issuer key by alg.
+		jwks: {
+			keys: [
+				{ ...edJwk, kid: issuerKey.kid, alg: "EdDSA" },
+				{ ...p256Key.jwk, kid: p256Key.kid, alg: "ES256" },
+			],
+		},
 		vct_values: [DEFAULT_VCT],
 	});
 });
