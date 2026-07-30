@@ -216,3 +216,33 @@ export async function verifyEs256Presentation(
 	}
 	return { verified: true, status: "valid", ...(payload.iss ? { issuer: payload.iss } : {}), ...(payload.sub ? { subject: payload.sub } : {}) };
 }
+
+/** Verify a compact JWS signature against a JWK (Ed25519/OKP -> EdDSA, or
+ * P-256/EC -> ES256) + return the parsed payload. Fail-closed on any other
+ * kty/crv/alg (no algorithm confusion). Used for the JARM signed-JWT layer
+ * (the wallet signs the encrypted-response payload). */
+export async function verifyJwsWithJwk(
+	jws: string,
+	jwk: Record<string, string>,
+): Promise<{ valid: boolean; payload?: Record<string, unknown> }> {
+	const parts = jws.split(".");
+	if (parts.length !== 3) return { valid: false };
+	const [h, p, s] = parts as [string, string, string];
+	const header = JSON.parse(b64urlDecode(h).toString("utf8")) as { alg?: string };
+	const payload = JSON.parse(b64urlDecode(p).toString("utf8")) as Record<string, unknown>;
+	const signingInput = Buffer.from(`${h}.${p}`, "ascii");
+	const sig = b64urlDecode(s);
+	if (jwk.kty === "OKP" && jwk.crv === "Ed25519") {
+		if (header.alg !== "EdDSA") return { valid: false };
+		const publicKeyPem = createPublicKey({ key: jwk, format: "jwk" }).export({ format: "pem", type: "spki" }) as string;
+		const { publicKey } = expandKey({ privateKeyPem: "", publicKeyPem, kid: "jws" });
+		const { verifyAsync } = await import("@noble/ed25519");
+		return { valid: await verifyAsync(new Uint8Array(sig), signingInput, publicKey), payload };
+	}
+	if (jwk.kty === "EC" && jwk.crv === "P-256") {
+		if (header.alg !== "ES256") return { valid: false };
+		const pub = createPublicKey({ key: jwk, format: "jwk" });
+		return { valid: verify("SHA256", signingInput, { key: pub, dsaEncoding: "ieee-p1363" }, sig), payload };
+	}
+	return { valid: false };
+}

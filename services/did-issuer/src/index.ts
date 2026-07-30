@@ -23,7 +23,7 @@ import { createAuthorizationRequest, resolveSession, peekKbJwtNonce, consumeSess
 import { decryptResponse } from "./jwe";
 import { revokeKid } from "./revoked-kids";
 import { requireOperator } from "./operatorAuth";
-import { verifyPresentation, verifyEs256Presentation } from "./vc-verify";
+import { verifyPresentation, verifyEs256Presentation, verifyJwsWithJwk } from "./vc-verify";
 import type { Achievement, BadgeEvidence, StatusPurpose } from "@mneurix/shared";
 import { assertRestEncryptionInProd } from "@mneurix/shared";
 
@@ -500,9 +500,25 @@ app.post("/openid4vp/response/:state", async (c) => {
 	} catch {
 		return jsonError(c, 401, "UNAUTHORIZED", "JWE decryption failed");
 	}
-	const inner = new URLSearchParams(plaintext);
-	const vpToken = inner.get("vp_token");
-	const innerState = inner.get("state");
+	// The JWE plaintext is either a form (vp_token=...&state=...) OR a JARM
+	// signed-JWT (a wallet-signed JWT whose payload carries vp_token + state + aud).
+	let vpToken: string | null = null;
+	let innerState: string | null = null;
+	if (!plaintext.includes("=") && !plaintext.includes("&") && plaintext.split(".").length === 3) {
+		// JARM signed-JWT layer (HAIP dc_api.jwt / direct_post.jwt JARM).
+		const jarmHeader = JSON.parse(Buffer.from(plaintext.split(".")[0]!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { jwk?: Record<string, string> };
+		if (!jarmHeader.jwk) return jsonError(c, 401, "UNAUTHORIZED", "JARM missing signing jwk");
+		const jarm = await verifyJwsWithJwk(plaintext, jarmHeader.jwk);
+		if (!jarm.valid) return jsonError(c, 401, "UNAUTHORIZED", "JARM signature invalid");
+		const jp = (jarm.payload ?? {}) as { vp_token?: string; state?: string; aud?: string };
+		vpToken = typeof jp.vp_token === "string" ? jp.vp_token : null;
+		innerState = typeof jp.state === "string" ? jp.state : null;
+		if (jp.aud !== session.clientId) return jsonError(c, 401, "UNAUTHORIZED", "JARM aud does not match the verifier client_id");
+	} else {
+		const inner = new URLSearchParams(plaintext);
+		vpToken = inner.get("vp_token");
+		innerState = inner.get("state");
+	}
 	if (!vpToken || !innerState) return jsonError(c, 400, "INVALID_REQUEST", "decrypted response missing vp_token + state");
 	if (innerState !== state) return jsonError(c, 401, "UNAUTHORIZED", "decrypted state does not match the response_uri state");
 	const issuerJwt = vpToken.split("~")[0]!;
