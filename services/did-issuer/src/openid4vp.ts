@@ -50,10 +50,15 @@ function constTimeEqual(a: string, b: string): boolean {
 }
 
 export interface CreateAuthRequestInput {
-	/** The credential type to request (the SD-JWT VC vct). */
-	vct: string;
+	/** The credential type to request (single-credential; multi uses `credentials`). */
+	vct?: string;
 	/** Claim paths to request (e.g. ["score", "given_name"]). */
 	claims?: string[];
+	/** Multi-credential DCQL: an array of credential queries (vct + claims each).
+	 * When set, the request queries >1 credential + the wallet presents a vp_token
+	 * object keyed by query id (OID4VP §8.1). When unset, the single `vct` +
+	 * `claims` are used (one credential, id "sd_jwt_vc"). */
+	credentials?: Array<{ vct: string; claims?: string[] }>;
 	/** Verifier client id (defaults to the did-issuer HTTPS origin). */
 	clientId?: string;
 	/** Where the wallet POSTs the vp_token (defaults to <issuer>/openid4vp/response). */
@@ -96,10 +101,14 @@ export function createAuthorizationRequest(issuerUrl: string, input: CreateAuthR
 	const state = randomSecret();
 	const clientId = input.clientId ?? issuerUrl;
 	const claims = input.claims ?? [];
+	const queries = input.credentials ?? [{ vct: input.vct!, claims }];
 	const dcqlQuery: AuthRequestResult["dcql_query"] = {
-		credentials: [
-			{ id: "sd_jwt_vc", format: "dc+sd-jwt", meta: { vct_values: [input.vct] }, claims: claims.map((c) => ({ path: [c] })) },
-		],
+		credentials: queries.map((q, i) => ({
+			id: queries.length > 1 ? `sd_jwt_vc_${i + 1}` : "sd_jwt_vc",
+			format: "dc+sd-jwt",
+			meta: { vct_values: [q.vct] },
+			claims: (q.claims ?? []).map((c) => ({ path: [c] })),
+		})),
 	};
 	let responseMode: "direct_post" | "direct_post.jwt" | "dc_api" | "dc_api.jwt" = "direct_post";
 	let responseUri = input.responseUri ?? `${issuerUrl}/openid4vp/response`;
@@ -145,7 +154,7 @@ export function createAuthorizationRequest(issuerUrl: string, input: CreateAuthR
 	const session: VerifierSession = {
 		nonce,
 		state,
-		vct: input.vct,
+		vct: queries[0]!.vct,
 		claims,
 		clientId,
 		responseUri,
@@ -154,7 +163,7 @@ export function createAuthorizationRequest(issuerUrl: string, input: CreateAuthR
 		...(recipientPrivateKeyPem ? { recipientPrivateKeyPem } : {}),
 	};
 	sessions.set(state, session);
-	return { uri, dcql_query: dcqlQuery, ...(clientMetadata ? { client_metadata: clientMetadata } : {}), ...(dcApiRequest ? { dc_api_request: dcApiRequest } : {}), ...(redirectUrl ? { redirect_url: redirectUrl } : {}), session: { nonce, state, responseUri, vct: input.vct, claims } };
+	return { uri, dcql_query: dcqlQuery, ...(clientMetadata ? { client_metadata: clientMetadata } : {}), ...(dcApiRequest ? { dc_api_request: dcApiRequest } : {}), ...(redirectUrl ? { redirect_url: redirectUrl } : {}), session: { nonce, state, responseUri, vct: queries[0]!.vct, claims } };
 }
 
 /** Match an incoming wallet response to a verifier session (by state + nonce).
@@ -213,7 +222,7 @@ export function createSignedAuthorizationRequest(issuerUrl: string, p256Key: Iss
 	const state = randomSecret();
 	const claims = input.claims ?? [];
 	const dcqlQuery: AuthRequestResult["dcql_query"] = {
-		credentials: [{ id: "sd_jwt_vc", format: "dc+sd-jwt", meta: { vct_values: [input.vct] }, claims: claims.map((c) => ({ path: [c] })) }],
+		credentials: [{ id: "sd_jwt_vc", format: "dc+sd-jwt", meta: { vct_values: [input.vct!] }, claims: claims.map((c) => ({ path: [c] })) }],
 	};
 	const responseUri = input.responseUri ?? `${issuerUrl}/openid4vp/response`;
 	const certDer = Buffer.from(p256Key.x5c![0]!, "base64");
@@ -232,9 +241,9 @@ export function createSignedAuthorizationRequest(issuerUrl: string, p256Key: Iss
 	const requestUri = `${issuerUrl}/openid4vp/request/${state}`;
 	const params = new URLSearchParams({ client_id: clientId, request_uri: requestUri, request_uri_method: "get" });
 	const uri = `openid4vp://?${params.toString()}`;
-	const session: VerifierSession = { nonce, state, vct: input.vct, claims, clientId, responseUri, createdAt: Date.now(), consumed: false };
+	const session: VerifierSession = { nonce, state, vct: input.vct!, claims, clientId, responseUri, createdAt: Date.now(), consumed: false };
 	sessions.set(state, session);
-	return { uri, dcql_query: dcqlQuery, request_object: requestObject, request_uri: requestUri, session: { nonce, state, responseUri, vct: input.vct, claims } };
+	return { uri, dcql_query: dcqlQuery, request_object: requestObject, request_uri: requestUri, session: { nonce, state, responseUri, vct: input.vct!, claims } };
 }
 
 export function _resetOpenid4vpForTests(): void {
