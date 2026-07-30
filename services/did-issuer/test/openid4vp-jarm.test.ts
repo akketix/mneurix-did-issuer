@@ -106,3 +106,14 @@ test("JARM: tampered JARM signature -> 401 (fail-closed)", async () => {
 	const r = await postEncrypted(sess.state, await encryptResponse(`${jarmHeader}.${jarmPayload}.${b64url(forgedSig)}`, sess.recipientJwk));
 	assert.equal(r.status, 401);
 });
+
+test("JARM: a bare SD-JWT VC as the encrypted plaintext (no form/JARM wrapper) is rejected cleanly (not misdetected as JARM)", async () => {
+	// A bare SD-JWT VC has no "="/"&" + 3 dot-parts BUT carries "~" -- it must NOT be
+	// misdetected as a JARM JWT (which never contains "~"). Rejected as a malformed
+	// response (400), not a JARM-auth failure (401).
+	const { holderJwk, holderSeed } = holder();
+	const sess = await requestEncrypted();
+	const vpToken = await buildVpToken(sess, holderJwk, holderSeed);
+	const r = await postEncrypted(sess.state, await encryptResponse(vpToken, sess.recipientJwk));
+	assert.equal(r.status, 400, "bare VC plaintext -> 400 (malformed response), not 401 (JARM misdetection)");
+});
