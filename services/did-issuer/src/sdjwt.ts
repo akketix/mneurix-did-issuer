@@ -3,8 +3,10 @@
 
 /** SD-JWT VC issuer — RFC 9901 + draft-ietf-oauth-sd-jwt-vc (M5).
  *
- * Ed25519-only (locked decision 2026-07-23): the Issuer-signed JWT uses
- * alg "EdDSA"; the holder key (cnf.jwk) is whatever the caller supplies.
+ * Hybrid signing (did-issuer-wallet-expansion, 1.1b): the Issuer-signed JWT
+ * uses alg "EdDSA" (Ed25519, did:web self-sovereign path) OR "ES256" (P-256,
+ * HAIP/EUDI wallet path, with an x5c header per HAIP §6.1.1); the holder key
+ * (cnf.jwk) is whatever the caller supplies.
  *
  * Serialization (RFC 9901 §4, verified against the spec — not from memory):
  *   SD-JWT = <Issuer-JWT>~<D.1>~<D.2>~...~<D.N>~
@@ -21,10 +23,11 @@
  * Recursive + array-element disclosures are a future hardening (RFC 9901 §4.2.6).
  *
  * Purity: node:crypto + @noble/ed25519. */
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createSign, randomBytes } from "node:crypto";
 import { signAsync, verifyAsync } from "@noble/ed25519";
 import { expandKey } from "./vc-issue";
 import type { KeyMaterial } from "@mneurix/shared";
+import type { IssuerP256Key } from "./keys";
 
 export type HolderJwk = Record<string, string>;
 
@@ -42,6 +45,10 @@ export interface SdJwtIssueInput {
 	selectivelyDisclosable: string[];
 	/** Holder binding key (cnf.jwk); required to enable key binding (M6). */
 	holderJwk?: HolderJwk;
+	/** Issuer-signed JWT algorithm: "EdDSA" (Ed25519, did:web, default) or
+	 * "ES256" (P-256, HAIP/EUDI wallet path; requires the p256Key arg + carries
+	 * the x5c header per HAIP §6.1.1 when the P-256 key has a cert chain). */
+	alg?: "EdDSA" | "ES256";
 	/** IETF Token Status List reference (draft-ietf-oauth-status-list): a
 	 * status.status_list.{uri,idx,bits} object pointing at the issuer's
 	 * /statuslists/:purpose/:id JWT endpoint. A verifier fetches the JWT at uri,
@@ -97,9 +104,11 @@ function disclosureHash(disclosure: string): string {
 
 // --- Issuance ---
 
-export async function issueSdJwtVc(input: SdJwtIssueInput, keys: KeyMaterial): Promise<SdJwtIssueResult> {
-	const { seed } = expandKey(keys);
-	if (!seed) throw new Error("issueSdJwtVc: private key required for signing");
+export async function issueSdJwtVc(input: SdJwtIssueInput, keys: KeyMaterial, p256Key?: IssuerP256Key): Promise<SdJwtIssueResult> {
+	const alg = input.alg ?? "EdDSA";
+	if (alg === "ES256" && !p256Key) throw new Error("issueSdJwtVc: ES256 requires a P-256 issuer key");
+	const seed = alg === "EdDSA" ? expandKey(keys).seed : undefined;
+	if (alg === "EdDSA" && !seed) throw new Error("issueSdJwtVc: private key required for signing");
 
 	const iat = input.iat ?? Math.floor(Date.now() / 1000);
 	const sdSet = new Set(input.selectivelyDisclosable);
@@ -135,11 +144,15 @@ export async function issueSdJwtVc(input: SdJwtIssueInput, keys: KeyMaterial): P
 	if (input.status) payload.status = input.status;
 
 	const headerKid = input.verificationMethod.includes("#") ? input.verificationMethod.slice(input.verificationMethod.lastIndexOf("#") + 1) : input.verificationMethod;
-	const header = { alg: "EdDSA", typ: "dc+sd-jwt", kid: headerKid };
+	const header = alg === "ES256"
+		? { alg: "ES256", typ: "dc+sd-jwt", kid: p256Key!.kid, ...(p256Key!.x5c ? { x5c: p256Key!.x5c } : {}) }
+		: { alg: "EdDSA", typ: "dc+sd-jwt", kid: headerKid };
 	const headerB64 = b64url(JSON.stringify(header));
 	const payloadB64 = b64url(JSON.stringify(payload));
 	const signingInput = Buffer.from(`${headerB64}.${payloadB64}`, "ascii");
-	const signature = await signAsync(signingInput, seed);
+	const signature = alg === "ES256"
+		? createSign("SHA256").update(signingInput).sign({ key: p256Key!.privateKeyPem, dsaEncoding: "ieee-p1363" })
+		: await signAsync(signingInput, seed!);
 	const issuerJwt = `${headerB64}.${payloadB64}.${b64url(signature)}`;
 
 	// RFC 9901 §4: <Issuer-JWT>~<D.1>~...~<D.N>~ (trailing tilde, no KB-JWT at issuance).
