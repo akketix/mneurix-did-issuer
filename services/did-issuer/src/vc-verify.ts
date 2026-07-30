@@ -13,7 +13,7 @@
  * Ed25519 (OKP/Ed25519) on KB-JWT verify (no algorithm confusion).
  *
  * Purity: node:crypto + vc-issue + sdjwt + store + revoked-kids + status. */
-import { createHash, createPublicKey } from "node:crypto";
+import { createHash, createPublicKey, verify } from "node:crypto";
 import { expandKey, verifyOb3 } from "./vc-issue";
 import { verifySdJwtVc, verifySdJwtVcEs256 } from "./sdjwt";
 import type { IssuerP256Key } from "./keys";
@@ -82,13 +82,24 @@ async function verifyKbJwt(
 	if (typeof payload.sd_hash !== "string" || payload.sd_hash !== expectedSdHash) return false;
 	if (expectedNonce !== undefined && payload.nonce !== expectedNonce) return false;
 	if (expectedAud !== undefined && payload.aud !== expectedAud) return false;
-	// Verify the KB-JWT Ed25519 signature with the holder public key (cnf.jwk).
-	const publicKeyPem = createPublicKey({ key: holderJwk, format: "jwk" }).export({ format: "pem", type: "spki" }) as string;
-	const { publicKey } = expandKey({ privateKeyPem: "", publicKeyPem, kid: "holder" });
-	const { verifyAsync } = await import("@noble/ed25519");
-	const sig = new Uint8Array(b64urlDecode(s));
+	// Verify the KB-JWT holder signature with the cnf.jwk public key. The holder
+	// key is pinned to Ed25519 (OKP/Ed25519, alg EdDSA) or P-256 (EC/P-256, alg
+	// ES256) -- fail-closed on any other kty/crv/alg (no algorithm confusion).
 	const signingInput = Buffer.from(`${h}.${p}`, "ascii");
-	return verifyAsync(sig, signingInput, publicKey);
+	const sig = b64urlDecode(s);
+	if (holderJwk.kty === "OKP" && holderJwk.crv === "Ed25519") {
+		if (header.alg !== "EdDSA") return false;
+		const publicKeyPem = createPublicKey({ key: holderJwk, format: "jwk" }).export({ format: "pem", type: "spki" }) as string;
+		const { publicKey } = expandKey({ privateKeyPem: "", publicKeyPem, kid: "holder" });
+		const { verifyAsync } = await import("@noble/ed25519");
+		return verifyAsync(new Uint8Array(sig), signingInput, publicKey);
+	}
+	if (holderJwk.kty === "EC" && holderJwk.crv === "P-256") {
+		if (header.alg !== "ES256") return false;
+		const pub = createPublicKey({ key: holderJwk, format: "jwk" });
+		return verify("SHA256", signingInput, { key: pub, dsaEncoding: "ieee-p1363" }, sig);
+	}
+	return false;
 }
 
 export async function verifyPresentation(input: VerifyInput): Promise<VerifyResult> {
@@ -133,8 +144,9 @@ export async function verifyPresentation(input: VerifyInput): Promise<VerifyResu
 			if (!holderJwk) return { verified: false, status: "rejected", kid, issuer: issuerDid, reason: "KB-JWT present without cnf.jwk" };
 			// Pin the holder key to Ed25519 (no algorithm confusion: an attacker
 			// cannot substitute an RSA/EC cnf.jwk).
-			if (holderJwk.kty !== "OKP" || holderJwk.crv !== "Ed25519")
-				return { verified: false, status: "rejected", kid, issuer: issuerDid, reason: "cnf.jwk must be Ed25519 (OKP/Ed25519)" };
+			const okHolderKey = (holderJwk.kty === "OKP" && holderJwk.crv === "Ed25519") || (holderJwk.kty === "EC" && holderJwk.crv === "P-256");
+			if (!okHolderKey)
+				return { verified: false, status: "rejected", kid, issuer: issuerDid, reason: "cnf.jwk must be Ed25519 (OKP) or P-256 (EC)" };
 			const expectedSdHash = sha256B64url(sdJwtWithoutKb);
 			const kbOk = await verifyKbJwt(kbJwt, holderJwk, expectedSdHash, input.nonce, input.aud);
 			if (!kbOk) return { verified: false, status: "rejected", kid, issuer: issuerDid, ...(payload.sub ? { subject: payload.sub } : {}), reason: "KB-JWT invalid" };
@@ -196,7 +208,8 @@ export async function verifyEs256Presentation(
 	if (kbJwt) {
 		const holderJwk = payload.cnf?.jwk;
 		if (!holderJwk) return { verified: false, status: "rejected", ...(payload.iss ? { issuer: payload.iss } : {}), reason: "KB-JWT present without cnf.jwk" };
-		if (holderJwk.kty !== "OKP" || holderJwk.crv !== "Ed25519") return { verified: false, status: "rejected", ...(payload.iss ? { issuer: payload.iss } : {}), reason: "cnf.jwk must be Ed25519 (OKP/Ed25519)" };
+		const okHolderKey = (holderJwk.kty === "OKP" && holderJwk.crv === "Ed25519") || (holderJwk.kty === "EC" && holderJwk.crv === "P-256");
+		if (!okHolderKey) return { verified: false, status: "rejected", ...(payload.iss ? { issuer: payload.iss } : {}), reason: "cnf.jwk must be Ed25519 (OKP) or P-256 (EC)" };
 		const expectedSdHash = sha256B64url(sdJwtWithoutKb);
 		const kbOk = await verifyKbJwt(kbJwt, holderJwk, expectedSdHash, opts.nonce, opts.aud);
 		if (!kbOk) return { verified: false, status: "rejected", ...(payload.iss ? { issuer: payload.iss } : {}), ...(payload.sub ? { subject: payload.sub } : {}), reason: "KB-JWT invalid" };
