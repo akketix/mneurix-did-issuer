@@ -367,11 +367,13 @@ v1.post("/presentations/request", async (c) => {
 		transport?: "openid4vp" | "dc_api" | "openid4vp-redirect";
 		/** Sign the request (JAR) + use the x509_hash client-id scheme (HAIP §5). */
 		signed?: boolean;
+		/** Multi-credential DCQL: an array of credential queries (vct + claims). */
+		credentials?: Array<{ vct: string; claims?: string[] }>;
 	} | null;
-	if (!body || !body.vct) {
+	if (!body || (!body.vct && !body.credentials)) {
 		return jsonError(c, 400, "BAD_REQUEST", "vct is required");
 	}
-	const result = body.signed
+	const result = (body.signed && body.vct)
 		? createSignedAuthorizationRequest(ISSUER_URL, p256Key, {
 			vct: body.vct,
 			...(body.claims ? { claims: body.claims } : {}),
@@ -379,12 +381,13 @@ v1.post("/presentations/request", async (c) => {
 			...(body.responseUri ? { responseUri: body.responseUri } : {}),
 		})
 		: createAuthorizationRequest(ISSUER_URL, {
-			vct: body.vct,
+			...(body.vct ? { vct: body.vct } : {}),
 			...(body.claims ? { claims: body.claims } : {}),
 			...(body.clientId ? { clientId: body.clientId } : {}),
 			...(body.responseUri ? { responseUri: body.responseUri } : {}),
 			...(body.encrypted ? { encrypted: body.encrypted } : {}),
 			...(body.transport ? { transport: body.transport } : {}),
+		...(body.credentials ? { credentials: body.credentials } : {}),
 		});
 	return c.json(result, 201);
 });
@@ -486,21 +489,39 @@ app.post("/credentials", async (c) => {
 // ES256/HTTPS-issuer verify path is a follow-up (fail-closed until then).
 app.post("/openid4vp/response", async (c) => {
 	const form = await c.req.parseBody();
-	const vpToken = typeof form.vp_token === "string" ? form.vp_token : null;
+	const rawVpToken = typeof form.vp_token === "string" ? form.vp_token : null;
 	const state = typeof form.state === "string" ? form.state : null;
-	if (!vpToken || !state) return jsonError(c, 400, "INVALID_REQUEST", "vp_token + state are required");
-	const nonce = peekKbJwtNonce(vpToken);
+	if (!rawVpToken || !state) return jsonError(c, 400, "INVALID_REQUEST", "vp_token + state are required");
+	// Multi-credential DCQL: vp_token is a JSON object keyed by query id (OID4VP §8.1);
+	// a bare string is the single-credential case (N=1).
+	let vpTokens: string[];
+	const trimmed = rawVpToken.trim();
+	if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+		try {
+			const obj = JSON.parse(trimmed) as Record<string, unknown>;
+			vpTokens = Object.values(obj).filter((v): v is string => typeof v === "string");
+		} catch {
+			vpTokens = [rawVpToken];
+		}
+	} else {
+		vpTokens = [rawVpToken];
+	}
+	if (vpTokens.length === 0) return jsonError(c, 400, "INVALID_REQUEST", "no vp_token presentations");
+	const nonce = peekKbJwtNonce(vpTokens[0]!);
 	if (!nonce) return jsonError(c, 401, "UNAUTHORIZED", "no KB-JWT / holder binding");
 	const session = resolveSession(state, nonce);
 	if (!session) return jsonError(c, 401, "UNAUTHORIZED", "no matching verifier session (state/nonce)");
-	const issuerJwt = vpToken.split("~")[0]!;
-	const hdr = JSON.parse(Buffer.from(issuerJwt.split(".")[0]!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { alg?: string };
-	const result = hdr.alg === "ES256"
-		? await verifyEs256Presentation(vpToken, p256Key, { requireKeyBinding: true, nonce: session.nonce, aud: session.clientId })
-		: await verifyPresentation({ presentation: vpToken, requireKeyBinding: true, nonce: session.nonce, aud: session.clientId });
-	if (!result.verified) return jsonError(c, 401, "UNAUTHORIZED", `presentation rejected: ${result.reason ?? result.status}`);
+	let lastResult: { verified: boolean; subject?: string; issuer?: string; reason?: string; status: string } | undefined;
+	for (const vpToken of vpTokens) {
+		const issuerJwt = vpToken.split("~")[0]!;
+		const hdr = JSON.parse(Buffer.from(issuerJwt.split(".")[0]!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { alg?: string };
+		lastResult = hdr.alg === "ES256"
+			? await verifyEs256Presentation(vpToken, p256Key, { requireKeyBinding: true, nonce: session.nonce, aud: session.clientId })
+			: await verifyPresentation({ presentation: vpToken, requireKeyBinding: true, nonce: session.nonce, aud: session.clientId });
+		if (!lastResult.verified) return jsonError(c, 401, "UNAUTHORIZED", `presentation rejected: ${lastResult.reason ?? lastResult.status}`);
+	}
 	consumeSession(state);
-	return c.json({ verified: true, subject: result.subject, issuer: result.issuer }, 200);
+	return c.json({ verified: true, credentials: vpTokens.length, ...(lastResult?.subject ? { subject: lastResult.subject } : {}), ...(lastResult?.issuer ? { issuer: lastResult.issuer } : {}) }, 200);
 });
 
 // OID4VP encrypted response receiver (POST /openid4vp/response/:state, direct_post.jwt):
