@@ -18,7 +18,8 @@ import { issueOb3 } from "./vc-issue";
 import { issueSdJwtVc, signIssuerJwt } from "./sdjwt";
 import { allocateOb3Status, allocateSdJwtStatus, getCredentialStatus, getEncodedStatusList } from "./status";
 import { createCredentialOffer, exchangePreAuthorizedCode, consumeAccessToken } from "./oid4vci";
-import { createAuthorizationRequest, resolveSession, peekKbJwtNonce, consumeSession } from "./openid4vp";
+import { createAuthorizationRequest, resolveSession, peekKbJwtNonce, consumeSession, getSessionByState } from "./openid4vp";
+import { decryptResponse } from "./jwe";
 import { revokeKid } from "./revoked-kids";
 import { requireOperator } from "./operatorAuth";
 import { verifyPresentation, verifyEs256Presentation } from "./vc-verify";
@@ -345,6 +346,7 @@ v1.post("/presentations/request", async (c) => {
 		claims?: string[];
 		clientId?: string;
 		responseUri?: string;
+		encrypted?: boolean;
 	} | null;
 	if (!body || !body.vct) {
 		return jsonError(c, 400, "BAD_REQUEST", "vct is required");
@@ -354,6 +356,7 @@ v1.post("/presentations/request", async (c) => {
 		...(body.claims ? { claims: body.claims } : {}),
 		...(body.clientId ? { clientId: body.clientId } : {}),
 		...(body.responseUri ? { responseUri: body.responseUri } : {}),
+		...(body.encrypted ? { encrypted: body.encrypted } : {}),
 	});
 	return c.json(result, 201);
 });
@@ -461,6 +464,40 @@ app.post("/openid4vp/response", async (c) => {
 	if (!nonce) return jsonError(c, 401, "UNAUTHORIZED", "no KB-JWT / holder binding");
 	const session = resolveSession(state, nonce);
 	if (!session) return jsonError(c, 401, "UNAUTHORIZED", "no matching verifier session (state/nonce)");
+	const issuerJwt = vpToken.split("~")[0]!;
+	const hdr = JSON.parse(Buffer.from(issuerJwt.split(".")[0]!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { alg?: string };
+	const result = hdr.alg === "ES256"
+		? await verifyEs256Presentation(vpToken, p256Key, { requireKeyBinding: true, nonce: session.nonce, aud: session.clientId })
+		: await verifyPresentation({ presentation: vpToken, requireKeyBinding: true, nonce: session.nonce, aud: session.clientId });
+	if (!result.verified) return jsonError(c, 401, "UNAUTHORIZED", `presentation rejected: ${result.reason ?? result.status}`);
+	consumeSession(state);
+	return c.json({ verified: true, subject: result.subject, issuer: result.issuer }, 200);
+});
+
+// OID4VP encrypted response receiver (POST /openid4vp/response/:state, direct_post.jwt):
+// the wallet POSTs response=<JWE> encrypted to the verifier's per-request ephemeral
+// ECDH-ES key (advertised in the request client_metadata). The receiver looks up
+// the session by the state in the path, decrypts the JWE (jose), parses the form
+// (vp_token + state), verifies state matches the path, then verifies the SD-JWT VC
+// + KB-JWT holder binding (same alg-dispatch as the unencrypted receiver).
+app.post("/openid4vp/response/:state", async (c) => {
+	const state = c.req.param("state");
+	const session = getSessionByState(state);
+	if (!session || session.consumed || !session.recipientPrivateKeyPem) return jsonError(c, 401, "UNAUTHORIZED", "no matching encrypted verifier session");
+	const form = await c.req.parseBody();
+	const jwe = typeof form.response === "string" ? form.response : null;
+	if (!jwe) return jsonError(c, 400, "INVALID_REQUEST", "response (JWE) is required for direct_post.jwt");
+	let plaintext: string;
+	try {
+		plaintext = await decryptResponse(jwe, session.recipientPrivateKeyPem);
+	} catch {
+		return jsonError(c, 401, "UNAUTHORIZED", "JWE decryption failed");
+	}
+	const inner = new URLSearchParams(plaintext);
+	const vpToken = inner.get("vp_token");
+	const innerState = inner.get("state");
+	if (!vpToken || !innerState) return jsonError(c, 400, "INVALID_REQUEST", "decrypted response missing vp_token + state");
+	if (innerState !== state) return jsonError(c, 401, "UNAUTHORIZED", "decrypted state does not match the response_uri state");
 	const issuerJwt = vpToken.split("~")[0]!;
 	const hdr = JSON.parse(Buffer.from(issuerJwt.split(".")[0]!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { alg?: string };
 	const result = hdr.alg === "ES256"

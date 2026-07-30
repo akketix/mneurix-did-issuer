@@ -12,7 +12,7 @@
  * Signed requests (JAR), the W3C Digital Credentials API transport, the
  * encrypted response (direct_post.jwt / JWE), + the response receiver +
  * KB-JWT holder binding are follow-ups (1.3-1.6). Purity: node:crypto. */
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual, generateKeyPairSync } from "node:crypto";
 
 export interface VerifierSession {
 	nonce: string;
@@ -21,6 +21,8 @@ export interface VerifierSession {
 	claims: string[];
 	clientId: string;
 	responseUri: string;
+	/** Per-request ephemeral ECDH-ES recipient private key (encrypted responses). */
+	recipientPrivateKeyPem?: string;
 	createdAt: number;
 	consumed: boolean;
 }
@@ -50,6 +52,9 @@ export interface CreateAuthRequestInput {
 	clientId?: string;
 	/** Where the wallet POSTs the vp_token (defaults to <issuer>/openid4vp/response). */
 	responseUri?: string;
+	/** Request an encrypted direct_post.jwt response (JWE ECDH-ES + A128GCM); the
+	 * verifier advertises a per-request ephemeral recipient public key. */
+	encrypted?: boolean;
 }
 
 export interface AuthRequestResult {
@@ -57,6 +62,9 @@ export interface AuthRequestResult {
 	uri: string;
 	/** The DCQL query (also embedded in the uri's dcql_query param). */
 	dcql_query: { credentials: Array<{ id: string; format: string; meta: { vct_values: string[] }; claims: Array<{ path: string[] }> }> };
+	/** The client_metadata (encrypted-response params + ephemeral recipient JWK),
+	 * present only for encrypted (direct_post.jwt) requests. */
+	client_metadata?: Record<string, unknown>;
 	/** The verifier session (nonce/state) for matching the response later. */
 	session: { nonce: string; state: string; responseUri: string; vct: string; claims: string[] };
 }
@@ -67,26 +75,40 @@ export function createAuthorizationRequest(issuerUrl: string, input: CreateAuthR
 	const nonce = randomSecret();
 	const state = randomSecret();
 	const clientId = input.clientId ?? issuerUrl;
-	const responseUri = input.responseUri ?? `${issuerUrl}/openid4vp/response`;
 	const claims = input.claims ?? [];
 	const dcqlQuery: AuthRequestResult["dcql_query"] = {
 		credentials: [
-			{
-				id: "sd_jwt_vc",
-				format: "dc+sd-jwt",
-				meta: { vct_values: [input.vct] },
-				claims: claims.map((c) => ({ path: [c] })),
-			},
+			{ id: "sd_jwt_vc", format: "dc+sd-jwt", meta: { vct_values: [input.vct] }, claims: claims.map((c) => ({ path: [c] })) },
 		],
 	};
+	let responseMode: "direct_post" | "direct_post.jwt" = "direct_post";
+	let responseUri = input.responseUri ?? `${issuerUrl}/openid4vp/response`;
+	let recipientPrivateKeyPem: string | undefined;
+	let clientMetadata: Record<string, unknown> | undefined;
+	if (input.encrypted) {
+		// Per-request ephemeral ECDH-ES recipient key (P-256); the wallet encrypts the
+		// response to its public JWK; the receiver decrypts with the private key.
+		const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+		recipientPrivateKeyPem = privateKey.export({ format: "pem", type: "pkcs8" }) as string;
+		const epk = publicKey.export({ format: "jwk" }) as Record<string, string>;
+		responseMode = "direct_post.jwt";
+		responseUri = input.responseUri ?? `${issuerUrl}/openid4vp/response/${state}`;
+		clientMetadata = {
+			encrypted_response_alg: "ECDH-ES",
+			encrypted_response_enc: "A128GCM",
+			jwks: { keys: [epk] },
+			vp_formats: { "dc+sd-jwt": { "sd-jwt_alg_values": ["EdDSA", "ES256"], "kb-jwt_alg_values": ["EdDSA", "ES256"] } },
+		};
+	}
 	const params = new URLSearchParams({
 		response_type: "vp_token",
-		response_mode: "direct_post",
+		response_mode: responseMode,
 		client_id: clientId,
 		response_uri: responseUri,
 		nonce,
 		state,
 		dcql_query: JSON.stringify(dcqlQuery),
+		...(clientMetadata ? { client_metadata: JSON.stringify(clientMetadata) } : {}),
 	});
 	const uri = `openid4vp://?${params.toString()}`;
 	const session: VerifierSession = {
@@ -98,9 +120,10 @@ export function createAuthorizationRequest(issuerUrl: string, input: CreateAuthR
 		responseUri,
 		createdAt: Date.now(),
 		consumed: false,
+		...(recipientPrivateKeyPem ? { recipientPrivateKeyPem } : {}),
 	};
 	sessions.set(state, session);
-	return { uri, dcql_query: dcqlQuery, session: { nonce, state, responseUri, vct: input.vct, claims } };
+	return { uri, dcql_query: dcqlQuery, ...(clientMetadata ? { client_metadata: clientMetadata } : {}), session: { nonce, state, responseUri, vct: input.vct, claims } };
 }
 
 /** Match an incoming wallet response to a verifier session (by state + nonce).
@@ -115,6 +138,12 @@ export function resolveSession(state: string, nonce: string): VerifierSession | 
 	}
 	if (!constTimeEqual(s.nonce, nonce)) return null;
 	return s;
+}
+
+/** Look up a verifier session by state (for the encrypted direct_post.jwt
+ * receiver, where the state is carried in the response_uri path). */
+export function getSessionByState(state: string): VerifierSession | null {
+	return sessions.get(state) ?? null;
 }
 
 /** Peek the KB-JWT nonce from an SD-JWT VC presentation (the holder-bound
