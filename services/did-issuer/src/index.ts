@@ -289,7 +289,7 @@ v1.post("/vcs:issue", async (c) => {
 			status,
 			verificationMethod: currentVerificationMethod(),
 		}, issuerKey);
-		return c.json({ credential: result.credential, format: "dc+sd-jwt", statusIndex: status.statusListIndex }, 201);
+		return c.json({ credential: result.credential, format: "dc+sd-jwt", statusIndex: status.status_list.idx }, 201);
 	}
 
 	return jsonError(c, 400, "BAD_REQUEST", "secure must be data-integrity or sd-jwt-vc");
