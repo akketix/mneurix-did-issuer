@@ -42,8 +42,11 @@ export interface SdJwtIssueInput {
 	selectivelyDisclosable: string[];
 	/** Holder binding key (cnf.jwk); required to enable key binding (M6). */
 	holderJwk?: HolderJwk;
-	/** Token Status List reference (status claim), if allocated. */
-	status?: { id: string; type: string; statusPurpose: string; statusListIndex: number };
+	/** IETF Token Status List reference (draft-ietf-oauth-status-list): a
+	 * status.status_list.{uri,idx,bits} object pointing at the issuer's
+	 * /statuslists/:purpose/:id JWT endpoint. A verifier fetches the JWT at uri,
+	 * checks the issuer signature, + reads the bit at idx (0 = valid, 1 = revoked). */
+	status?: { status_list: { uri: string; idx: number; bits?: number } };
 	/** Issuer verification method (kid header), e.g. did:web:<origin>#<kid>. */
 	verificationMethod: string;
 	/** Issued-at (seconds). Defaults to now. */

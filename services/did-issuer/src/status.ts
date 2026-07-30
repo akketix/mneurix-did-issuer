@@ -81,9 +81,9 @@ export function allocateSdJwtStatus(
 	statusListId: string,
 	statusPurpose: StatusPurpose = "revocation",
 	credentialId?: string,
-): { id: string; type: string; statusPurpose: StatusPurpose; statusListIndex: number } {
+): { status_list: { uri: string; idx: number; bits: number } } {
 	const entry = allocateOb3Status(statusListId, statusPurpose, credentialId);
-	return { id: entry.id, type: "statuslist", statusPurpose: entry.statusPurpose, statusListIndex: entry.statusListIndex };
+	return { status_list: { uri: statusListId, idx: entry.statusListIndex, bits: 1 } };
 }
 
 /** credential id → allocated status entry (for GET /credentials/:id/status). */
