@@ -99,11 +99,7 @@ deployment, with no per-seat limits. You may **not** remove or circumvent
 license keys, or **re-host this as a managed/hosted service** for third parties
 without a commercial addendum.
 
-**What a commercial license buys** is the commercial grant + a signed license
-file (the right to re-host as a managed service, multi-tenant, white-label) —
-*not* the bytes. The base engine stays free under ELv2; only the commercial
-codepath is license-key-gated. See [`LICENSING.md`](./LICENSING.md) for the full
-purchase terms, refund policy, and the per-module deliverables.
+**License key requirement**: Evaluation installs run for up to **90 days**. Continued operation in production or self-hosted deployment beyond 90 days requires a cryptographically signed platform license file (`data/license.json`). See [`LICENSING.md`](./LICENSING.md) and [https://mneurix.dev/credential-infrastructure](https://mneurix.dev/credential-infrastructure) for license tiers and purchase details.
 
 ## Security posture
 
@@ -124,5 +120,5 @@ purchase terms, refund policy, and the per-module deliverables.
 
 ---
 
-Part of [Mneurix Sovereign Credential Infrastructure](https://github.com/akketix).
-Pricing + commercial addenda: see the mainpage [Licensing](https://mneurix.example/licensing) page.
+Part of [Mneurix Sovereign Credential Infrastructure](https://mneurix.dev/credential-infrastructure).
+Pricing, license keys, and commercial terms: see [mneurix.dev/credential-infrastructure](https://mneurix.dev/credential-infrastructure).

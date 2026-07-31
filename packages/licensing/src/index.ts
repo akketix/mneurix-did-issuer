@@ -325,7 +325,7 @@ export function assertPlatformLicense(
 		opts.licensePath ?? process.env.MNEURIX_LICENSE_FILE ?? "data/license.json";
 	if (!existsSync(path)) {
 		throw new PlatformLicenseError(
-			`no platform license file at ${path} — on-prem refuses to boot without a Mneurix-issued license (Phase F).`,
+			`no platform license file at ${path} — on-prem refuses to boot without a Mneurix-issued license (Phase F). Evaluation installs run for 90 days; obtain or renew a signed platform license at https://mneurix.dev/credential-infrastructure`,
 		);
 	}
 	let raw: string;
@@ -346,8 +346,8 @@ export function assertPlatformLicense(
 			keyring.has(lic.mneurixKeyId) || keyring.has(LICENSE_WILDCARD_KID);
 		throw new PlatformLicenseError(
 			kidPinned
-				? "platform license signature is invalid — on-prem refuses to boot (Phase F)."
-				: `platform license mneurixKeyId "${lic.mneurixKeyId}" is not in the pinned keyring — on-prem refuses to boot (CISO F4).`,
+				? "platform license signature is invalid — on-prem refuses to boot (Phase F). Obtain a valid license at https://mneurix.dev/credential-infrastructure"
+				: `platform license mneurixKeyId "${lic.mneurixKeyId}" is not in the pinned keyring — on-prem refuses to boot (CISO F4). See https://mneurix.dev/credential-infrastructure`,
 		);
 	}
 	// CISO F65: reject licenses below the minimum version floor.
@@ -379,11 +379,11 @@ export function assertPlatformLicense(
 
 	if (degraded) {
 		console.warn(
-			`[license] DEGRADED: license for ${lic.orgId} expired ${lic.validUntil} and is past the ${graceDays}-day grace. Proctoring + online refresh are disabled. Renew the license.`,
+			`[license] DEGRADED: license for ${lic.orgId} expired ${lic.validUntil} and is past the ${graceDays}-day grace. Evaluation installs run for 90 days. Renew your license at https://mneurix.dev/credential-infrastructure`,
 		);
 	} else if (expired) {
 		console.warn(
-			`[license] EXPIRED: license for ${lic.orgId} expired ${lic.validUntil}. Booting with a warning; proctoring still active. Renew within the ${graceDays}-day grace to avoid degrade.`,
+			`[license] EXPIRED: license for ${lic.orgId} expired ${lic.validUntil}. Booting with a warning; proctoring still active. Renew within the ${graceDays}-day grace at https://mneurix.dev/credential-infrastructure`,
 		);
 	}
 	return state;

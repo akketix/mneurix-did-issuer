@@ -1,9 +1,6 @@
 # Licensing
 
-> Canonical source: `akketix/mneurix` → `src/pages/licensing.astro`
-> (last updated 2026-07-25). This file mirrors the website's licensing terms so
-> the repo + the public site stay in sync. The legal license text is in
-> [`LICENSE`](./LICENSE) (Elastic License 2.0).
+> Canonical source: [`mneurix.dev/credential-infrastructure`](https://mneurix.dev/credential-infrastructure) and [`mneurix.dev/licensing`](https://mneurix.dev/licensing). This file mirrors the website's licensing terms so the repo + the public site stay in sync. The legal license text is in [`LICENSE`](./LICENSE) (Elastic License 2.0).
 
 Last updated: 2026-07-25
 
@@ -14,9 +11,9 @@ the software on your own infrastructure; we hand you the bundle and a signed
 license file. This page governs software purchases and is separate from the
 site Terms of Service.
 
-Looking to buy a module? See the Sovereign Credential Infrastructure — the
-first product (pre-GA, meaning it's still in development and not yet available
-to purchase).
+Looking to buy or renew a license key? See [Sovereign Credential Infrastructure](https://mneurix.dev/credential-infrastructure).
+
+> **Important**: Evaluation and self-hosted installs function for up to **90 days**. Continued operation beyond 90 days requires a cryptographically signed platform license file (`data/license.json`) obtained from [https://mneurix.dev/credential-infrastructure](https://mneurix.dev/credential-infrastructure).
 
 ## The license: Elastic License 2.0 (ELv2)
 
