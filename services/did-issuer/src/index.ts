@@ -526,6 +526,7 @@ app.post("/openid4vp/response", async (c) => {
 	if (!nonce) return jsonError(c, 401, "UNAUTHORIZED", "no KB-JWT / holder binding");
 	const session = resolveSession(state, nonce);
 	if (!session) return jsonError(c, 401, "UNAUTHORIZED", "no matching verifier session (state/nonce)");
+	consumeSession(state); // consume BEFORE the async verify (closes the concurrent-replay race; the wallet does not retry the same session)
 	let lastResult: { verified: boolean; subject?: string; issuer?: string; reason?: string; status: string } | undefined;
 	for (const vpToken of vpTokens) {
 		let r: { verified: boolean; subject?: string; issuer?: string; reason?: string; status: string };
@@ -541,7 +542,6 @@ app.post("/openid4vp/response", async (c) => {
 		if (!r.verified) return jsonError(c, 401, "UNAUTHORIZED", `presentation rejected: ${r.reason ?? r.status}`);
 		lastResult = r;
 	}
-	consumeSession(state);
 	return c.json({ verified: true, credentials: vpTokens.length, ...(lastResult?.subject ? { subject: lastResult.subject } : {}), ...(lastResult?.issuer ? { issuer: lastResult.issuer } : {}) }, 200);
 });
 
@@ -555,6 +555,7 @@ app.post("/openid4vp/response/:state", async (c) => {
 	const state = c.req.param("state");
 	const session = getSessionByState(state);
 	if (!session || session.consumed || !session.recipientPrivateKeyPem) return jsonError(c, 401, "UNAUTHORIZED", "no matching encrypted verifier session");
+	consumeSession(state); // consume BEFORE the async decrypt/verify (closes the concurrent-replay race)
 	const form = await c.req.parseBody();
 	const jwe = typeof form.response === "string" ? form.response : null;
 	if (!jwe) return jsonError(c, 400, "INVALID_REQUEST", "response (JWE) is required for direct_post.jwt");
@@ -600,7 +601,6 @@ app.post("/openid4vp/response/:state", async (c) => {
 		return jsonError(c, 401, "UNAUTHORIZED", "malformed presentation");
 	}
 	if (!result.verified) return jsonError(c, 401, "UNAUTHORIZED", `presentation rejected: ${result.reason ?? result.status}`);
-	consumeSession(state);
 	return c.json({ verified: true, subject: result.subject, issuer: result.issuer }, 200);
 });
 
