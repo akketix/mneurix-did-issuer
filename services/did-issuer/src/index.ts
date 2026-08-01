@@ -26,6 +26,29 @@ import { requireOperator } from "./operatorAuth";
 import { verifyPresentation, verifyEs256Presentation, verifyJwsWithJwk } from "./vc-verify";
 import type { Achievement, BadgeEvidence, StatusPurpose } from "@mneurix/shared";
 import { assertRestEncryptionInProd } from "@mneurix/shared";
+import { assertPlatformLicense, getLicenseState } from "@mneurix/licensing";
+
+// Run platform license boot guard (Phase F)
+assertPlatformLicense({});
+
+function checkIssuanceLicenseGate(c: any) {
+	const state = getLicenseState();
+	if (state?.degraded) {
+		return jsonError(
+			c,
+			402,
+			"COMMERCIAL_LICENSE_EXPIRED",
+			"Commercial platform license expired and past 45-day grace period. Renew at https://mneurix.dev/credential-infrastructure",
+		);
+	}
+	if (state?.expired && state?.validUntil) {
+		c.header(
+			"X-Mneurix-License-Warning",
+			`COMMERCIAL_LICENSE_GRACE_PERIOD; valid_until=${state.validUntil}`,
+		);
+	}
+	return null;
+}
 
 const SERVICE_TOKEN =
 	process.env.MNEURIX_DID_ISSUER_SERVICE_TOKEN ?? "dev-did-issuer-token";
@@ -277,6 +300,8 @@ v1.get("/credentials/:id/status", (c) => {
 // POST /v1/vcs:issue — issue a VC in one of two envelopes (M5):
 // data-integrity (OB3 ed25519-jcs-2020) or sd-jwt-vc (RFC 9901 SD-JWT VC, Ed25519-only).
 v1.post("/vcs:issue", async (c) => {
+	const gate = checkIssuanceLicenseGate(c);
+	if (gate) return gate;
 	const body = (await c.req.json().catch(() => null)) as {
 		subjectId?: string;
 		secure?: string;
