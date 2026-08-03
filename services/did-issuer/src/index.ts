@@ -97,8 +97,15 @@ app.get("/v1/openapi.json", (c) => c.json(openApiDoc));
 
 // Public did:web well-known (canonical origin).
 app.get("/.well-known/did.json", (c) => {
-	const { did, document } = mintFor(ISSUER_ORIGIN);
-	return c.json({ ...document, alsoKnownAs: [did] });
+	// H3 fix: serve the STORED document (not re-mint on every GET). mintFor writes
+	// to the store (putDid) — calling it on every GET clobbers the rotated DID doc
+	// (after a key rotation, the next well-known fetch replaces the multi-method
+	// rotated doc with a single-method current-key-only doc → old credentials
+	// can't verify). Only mint if the store has no doc yet.
+	const stored = getDid(issuerDid);
+	if (stored) return c.json(stored.document);
+	const { document } = mintFor(ISSUER_ORIGIN);
+	return c.json(document);
 });
 
 // Public SD-JWT VC issuer metadata (draft-ietf-oauth-sd-jwt-vc §3): the issuer

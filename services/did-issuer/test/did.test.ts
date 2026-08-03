@@ -40,9 +40,9 @@ test("mint -> resolve round-trip via the API", async () => {
 test("well-known serves the canonical-origin DID document", async () => {
 	const r = await app.request("/.well-known/did.json");
 	assert.equal(r.status, 200);
-	const b = (await r.json()) as { id: string; alsoKnownAs: string[] };
+	const b = (await r.json()) as { id: string; verificationMethod: unknown[] };
 	assert.equal(b.id, didFor("did-issuer.mneurix.example"));
-	assert.ok(b.alsoKnownAs.includes(b.id));
+	assert.ok(Array.isArray(b.verificationMethod), "DID doc has verificationMethod");
 });
 
 test("mint rejects a bad origin + no-token is 401", async () => {
