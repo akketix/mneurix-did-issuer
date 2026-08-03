@@ -28,6 +28,7 @@
  */
 import { sign, verify, createPrivateKey, createPublicKey } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { z } from "zod";
 import canonicalize from "canonicalize";
 
@@ -323,7 +324,7 @@ export function assertPlatformLicense(
 		} else {
 				firstRunMs = nowMs;
 				try {
-					mkdirSync(require("node:path").dirname(firstRunPath), { recursive: true });
+					mkdirSync(dirname(firstRunPath), { recursive: true });
 					writeFileSync(firstRunPath, JSON.stringify({ firstRun: new Date(firstRunMs).toISOString() }), { mode: 0o640 });
 				} catch {
 					// can't persist the first-run → trial starts now each boot (can't enforce)
@@ -356,10 +357,13 @@ export function assertPlatformLicense(
 	// --- Licensed mode: license file present → resolve the keyring + verify ---
 	let keyring = opts.keyring ?? null;
 	if (!keyring) {
-		const file =
-			opts.pubKeyFile ??
-			process.env.MNEURIX_LICENSE_PUBKEY_FILE ??
-			DEFAULT_PUBKEY_FILE;
+		// C1 fix: on-prem ignores the operator-set MNEURIX_LICENSE_PUBKEY_FILE env var
+		// (the operator could point it at their own key → forge a license). Only the
+		// baked DEFAULT_PUBKEY_FILE or an explicit opts.pubKeyFile (from the service
+		// code, not the operator) is trusted on-prem.
+		const file = onPrem
+			? (opts.pubKeyFile ?? DEFAULT_PUBKEY_FILE)
+			: (opts.pubKeyFile ?? process.env.MNEURIX_LICENSE_PUBKEY_FILE ?? DEFAULT_PUBKEY_FILE);
 		keyring = loadLicenseKeyringFromFile(file);
 	}
 	if (onPrem && !keyring) {
