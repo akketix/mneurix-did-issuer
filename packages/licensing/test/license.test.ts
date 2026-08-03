@@ -38,14 +38,18 @@ const tmp = mkdtempSync(join(tmpdir(), "mneurix-license-test-"));
 
 function unsigned(opts: {
 	orgId?: string;
-	validUntil: string;
+	validUntil?: string;
 	tier?: string;
+	licenseType?: "personal" | "commercial";
+	teamSize?: "solo" | "small" | "large";
 }): UnsignedPlatformLicense {
 	return {
 		orgId: opts.orgId ?? "acme",
 		product: "onprem",
 		tier: opts.tier ?? "enterprise",
-		validUntil: opts.validUntil,
+		licenseType: opts.licenseType ?? "commercial",
+		...(opts.teamSize ? { teamSize: opts.teamSize } : {}),
+		...(opts.validUntil ? { validUntil: opts.validUntil } : {}),
 		issuedAt: "2026-01-01T00:00:00Z",
 		version: 1,
 		mneurixKeyId: "lic-test-1",
@@ -88,18 +92,19 @@ test("assertPlatformLicense: dev (env unset) is a no-op — no file needed", () 
 	assert.equal(isProctoringAllowed(), true); // not degraded
 });
 
-test("assertPlatformLicense: missing file in production throws (hard gate)", () => {
+test("assertPlatformLicense: missing file in production -> trial mode (90-day evaluation, no throw)", () => {
 	resetLicenseState();
-	assert.throws(
-		() =>
-			assertPlatformLicense({
-				pubKeyPem: PUB,
-				licensePath: join(tmp, "nonexistent.json"),
-				env: "production",
-				now: () => Date.parse("2026-07-17T00:00:00Z"),
-			}),
-		PlatformLicenseError,
-	);
+	const firstRun = join(tmp, "first-run-trial.json");
+	const state = assertPlatformLicense({
+		pubKeyPem: PUB,
+		licensePath: join(tmp, "nonexistent.json"),
+		firstRunPath: firstRun,
+		env: "production",
+		now: () => Date.parse("2026-07-17T00:00:00Z"),
+	});
+	assert.equal(state.loaded, false);
+	assert.equal(state.unlicensed, true);
+	assert.equal(state.trialExpired, false, "within the 90-day trial");
 });
 
 test("assertPlatformLicense: invalid signature in production throws", () => {
@@ -163,12 +168,12 @@ test("assertPlatformLicense: past grace -> degraded, proctoring disabled", () =>
 	resetLicenseState();
 	const path = join(tmp, "degraded.json");
 	writeLicense(path, unsigned({ validUntil: "2027-01-01T00:00:00Z" }));
-	// 2027-03-15: ~73 days past validUntil (grace 45) -> degraded.
+	// 2027-05-01: ~120 days past validUntil (grace 90) -> degraded.
 	const state = assertPlatformLicense({
 		pubKeyPem: PUB,
 		licensePath: path,
 		env: "production",
-		now: () => Date.parse("2027-03-15T00:00:00Z"),
+		now: () => Date.parse("2027-05-01T00:00:00Z"),
 	});
 	assert.equal(state.degraded, true);
 	assert.equal(isProctoringAllowed(), false);
@@ -271,7 +276,7 @@ test("refreshLicenseOnline: stops refreshing once degraded", async () => {
 		pubKeyPem: PUB,
 		licensePath: path,
 		env: "production",
-		now: () => Date.parse("2027-03-15T00:00:00Z"),
+		now: () => Date.parse("2027-05-01T00:00:00Z"),
 	});
 	assert.equal(isLicenseDegraded(), true);
 	let called = false;
@@ -509,4 +514,50 @@ test("assertPlatformLicense: on-prem rejects an invalid-signature license even w
 			}),
 		PlatformLicenseError,
 	);
+});
+
+test("assertPlatformLicense: a perpetual license (no validUntil) never expires or degrades", () => {
+	resetLicenseState();
+	const path = join(tmp, "perpetual.json");
+	writeLicense(path, unsigned({ licenseType: "commercial", teamSize: "solo" })); // no validUntil = perpetual
+	const state = assertPlatformLicense({
+		pubKeyPem: PUB,
+		licensePath: path,
+		env: "production",
+		now: () => Date.parse("2099-01-01T00:00:00Z"), // far future — still not expired
+	});
+	assert.equal(state.loaded, true);
+	assert.equal(state.expired, false, "perpetual license never expires");
+	assert.equal(state.degraded, false);
+	assert.equal(state.licenseType, "commercial");
+	assert.equal(state.teamSize, "solo");
+});
+
+test("assertPlatformLicense: an unlicensed install past the 90-day trial -> trialExpired", () => {
+	resetLicenseState();
+	const firstRun = join(tmp, "first-run-expired.json");
+	writeFileSync(firstRun, JSON.stringify({ firstRun: "2026-01-01T00:00:00Z" }), "utf8");
+	const state = assertPlatformLicense({
+		pubKeyPem: PUB,
+		licensePath: join(tmp, "nonexistent.json"),
+		firstRunPath: firstRun,
+		env: "production",
+		now: () => Date.parse("2026-07-17T00:00:00Z"), // ~197 days later → past 90-day trial
+	});
+	assert.equal(state.unlicensed, true);
+	assert.equal(state.trialExpired, true, "past the 90-day trial");
+});
+
+test("assertPlatformLicense: a personal license type is recorded in the state", () => {
+	resetLicenseState();
+	const path = join(tmp, "personal.json");
+	writeLicense(path, unsigned({ licenseType: "personal", validUntil: "2027-01-01T00:00:00Z" }));
+	const state = assertPlatformLicense({
+		pubKeyPem: PUB,
+		licensePath: path,
+		env: "production",
+		now: () => Date.parse("2026-07-17T00:00:00Z"),
+	});
+	assert.equal(state.licenseType, "personal");
+	assert.equal(state.teamSize, undefined);
 });

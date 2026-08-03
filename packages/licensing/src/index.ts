@@ -27,12 +27,14 @@
  * Everything is unit-testable via an injected `now()` + a mock `fetcher`.
  */
 import { sign, verify, createPrivateKey, createPublicKey } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { z } from "zod";
 import canonicalize from "canonicalize";
 
 const MS_PER_DAY = 86_400_000;
-const DEFAULT_GRACE_DAYS = 45;
+const DEFAULT_GRACE_DAYS = 90;
+/** Trial window (days) for unlicensed installs — test before buying. */
+const DEFAULT_TRIAL_DAYS = 90;
 
 /** Build-time minimum license version floor (CISO F65). Licenses with a
  * `version` below this are rejected by `assertPlatformLicense` even when
@@ -62,7 +64,9 @@ export const PlatformLicenseSchema = z.object({
 	orgId: z.string().min(1),
 	product: z.enum(["onprem", "did-issuer-onprem", "proctoring-onprem"]),
 	tier: z.string().min(1),
-	validUntil: z.string().datetime({ offset: true }),
+	licenseType: z.enum(["personal", "commercial"]),
+	teamSize: z.enum(["solo", "small", "large"]).optional(),
+	validUntil: z.string().datetime({ offset: true }).optional(),
 	seats: z.number().int().positive().optional(),
 	issuedAt: z.string().datetime({ offset: true }),
 	version: z.number().int().min(1),
@@ -185,9 +189,15 @@ export interface LicenseState {
 	validSignature: boolean;
 	expired: boolean;
 	degraded: boolean;
+	/** True if no license file is present (running in trial mode). */
+	unlicensed: boolean;
+	/** True if the trial window has expired (no license + past the trial days). */
+	trialExpired: boolean;
 	orgId?: string;
 	validUntil?: string;
 	graceDays: number;
+	licenseType?: "personal" | "commercial";
+	teamSize?: "solo" | "small" | "large";
 }
 
 let licenseState: LicenseState | null = null;
@@ -235,8 +245,12 @@ export interface AssertPlatformLicenseOptions {
 	/** Minimum license version floor (CISO F65). Defaults to
 	 * `MIN_LICENSE_VERSION`. Licenses with `version <` this are rejected. */
 	minLicenseVersion?: number;
-	/** Grace window in days after validUntil before degrade. Default 45. */
+	/** Grace window in days after validUntil before degrade. Default 90. */
 	graceDays?: number;
+	/** Trial window in days for unlicensed installs. Default 90. */
+	trialDays?: number;
+	/** Path to the first-run timestamp file (for the trial). Defaults to data/first-run.json or $MNEURIX_FIRST_RUN_FILE. */
+	firstRunPath?: string;
 	/** Injectable clock for tests. Defaults to Date.now. */
 	now?: () => number;
 	/** Environment: "production" triggers the hard gate (mirrors the other boot
@@ -261,10 +275,11 @@ export interface AssertPlatformLicenseOptions {
 /** Pure expiry evaluation (extracted for lower complexity + direct unit testing).
  * expired = now past validUntil; degraded = expired AND past the grace window. */
 export function evaluateLicenseExpiry(
-	validUntil: string,
+	validUntil: string | undefined,
 	graceDays: number,
 	nowMs: number,
 ): { expired: boolean; degraded: boolean } {
+	if (!validUntil) return { expired: false, degraded: false }; // perpetual license — never expires
 	const untilMs = Date.parse(validUntil);
 	const expired = nowMs > untilMs;
 	const degraded = expired && nowMs > untilMs + graceDays * MS_PER_DAY;
@@ -274,11 +289,6 @@ export function evaluateLicenseExpiry(
 export function assertPlatformLicense(
 	opts: AssertPlatformLicenseOptions,
 ): LicenseState {
-	// CISO F3: the on-prem image bakes MNEURIX_ON_PREM=1 so the operator cannot
-	// unset it. When on-prem, the hard gate runs regardless of MNEURIX_ENV —
-	// deleting/typoing MNEURIX_ENV=production no longer escapes the license
-	// check. We also honor MNEURIX_ENV=production + MNEURIX_LICENSE_REQUIRED
-	// for non-on-prem prod / forced-local-test paths.
 	const onPrem = opts.onPrem ?? process.env.MNEURIX_ON_PREM === "1";
 	const env = opts.env ?? process.env.MNEURIX_ENV;
 	const isProd = env === "production";
@@ -289,11 +299,61 @@ export function assertPlatformLicense(
 			validSignature: false,
 			expired: false,
 			degraded: false,
+			unlicensed: false,
+			trialExpired: false,
 			graceDays: opts.graceDays ?? DEFAULT_GRACE_DAYS,
 		};
 	}
 
-	// Resolve the pinned keyring (CISO F4 + F38).
+	const path =
+		opts.licensePath ?? process.env.MNEURIX_LICENSE_FILE ?? "data/license.json";
+
+	// --- Trial mode: no license file → 90-day evaluation window (not a hard refuse) ---
+	if (!existsSync(path)) {
+		const firstRunPath =
+			opts.firstRunPath ?? process.env.MNEURIX_FIRST_RUN_FILE ?? "data/first-run.json";
+		const nowMs = (opts.now ?? Date.now)();
+		let firstRunMs: number;
+		if (existsSync(firstRunPath)) {
+			try {
+				firstRunMs = Date.parse(JSON.parse(readFileSync(firstRunPath, "utf8")).firstRun);
+			} catch {
+				firstRunMs = nowMs; // corrupt first-run → reset the trial
+			}
+		} else {
+				firstRunMs = nowMs;
+				try {
+					mkdirSync(require("node:path").dirname(firstRunPath), { recursive: true });
+					writeFileSync(firstRunPath, JSON.stringify({ firstRun: new Date(firstRunMs).toISOString() }), { mode: 0o640 });
+				} catch {
+					// can't persist the first-run → trial starts now each boot (can't enforce)
+				}
+		}
+		const trialDays = opts.trialDays ?? DEFAULT_TRIAL_DAYS;
+		const trialExpired = nowMs > firstRunMs + trialDays * MS_PER_DAY;
+		const state: LicenseState = {
+			loaded: false,
+			validSignature: false,
+			expired: false,
+			degraded: false,
+			unlicensed: true,
+			trialExpired,
+			graceDays: opts.graceDays ?? DEFAULT_GRACE_DAYS,
+		};
+		licenseState = state;
+		if (trialExpired) {
+			console.warn(
+				`[license] TRIAL EXPIRED: no license registered + the ${trialDays}-day evaluation period has ended. Issuance is disabled. Register at https://mneurix.dev/credential-infrastructure`,
+			);
+		} else {
+			console.warn(
+				`[license] TRIAL: no license registered — running the ${trialDays}-day evaluation period. Register at https://mneurix.dev/credential-infrastructure`,
+			);
+		}
+		return state;
+	}
+
+	// --- Licensed mode: license file present → resolve the keyring + verify ---
 	let keyring = opts.keyring ?? null;
 	if (!keyring) {
 		const file =
@@ -302,16 +362,11 @@ export function assertPlatformLicense(
 			DEFAULT_PUBKEY_FILE;
 		keyring = loadLicenseKeyringFromFile(file);
 	}
-	// On-prem: the verification key MUST be pinned in the image. Ignore any
-	// operator-supplied `pubKeyPem` (env-sourced) — only the file keyring is
-	// trusted. Missing keyring → fail-closed.
 	if (onPrem && !keyring) {
 		throw new PlatformLicenseError(
 			`on-prem build requires a pinned license-signing keyring file (MNEURIX_LICENSE_PUBKEY_FILE or ${DEFAULT_PUBKEY_FILE}) — refusing to boot without a Mneurix-pinned verification key (CISO F4).`,
 		);
 	}
-	// Non-on-prem (dev/test/legacy-prod): allow a directly-injected single
-	// pubkey as a wildcard keyring. This preserves the existing test path.
 	if (!keyring && opts.pubKeyPem) {
 		keyring = new Map([[LICENSE_WILDCARD_KID, opts.pubKeyPem]]);
 	}
@@ -321,13 +376,6 @@ export function assertPlatformLicense(
 		);
 	}
 
-	const path =
-		opts.licensePath ?? process.env.MNEURIX_LICENSE_FILE ?? "data/license.json";
-	if (!existsSync(path)) {
-		throw new PlatformLicenseError(
-			`no platform license file at ${path} — on-prem refuses to boot without a Mneurix-issued license (Phase F). Evaluation installs run for 90 days; obtain or renew a signed platform license at https://mneurix.dev/credential-infrastructure`,
-		);
-	}
 	let raw: string;
 	try {
 		raw = readFileSync(path, "utf8");
@@ -350,7 +398,6 @@ export function assertPlatformLicense(
 				: `platform license mneurixKeyId "${lic.mneurixKeyId}" is not in the pinned keyring — on-prem refuses to boot (CISO F4). See https://mneurix.dev/credential-infrastructure`,
 		);
 	}
-	// CISO F65: reject licenses below the minimum version floor.
 	const minVer = opts.minLicenseVersion ?? MIN_LICENSE_VERSION;
 	if (lic.version < minVer) {
 		throw new PlatformLicenseError(
@@ -371,19 +418,23 @@ export function assertPlatformLicense(
 		validSignature: true,
 		expired,
 		degraded,
+		unlicensed: false,
+		trialExpired: false,
 		orgId: lic.orgId,
-		validUntil: lic.validUntil,
+		...(lic.validUntil ? { validUntil: lic.validUntil } : {}),
 		graceDays,
+		licenseType: lic.licenseType,
+		...(lic.teamSize ? { teamSize: lic.teamSize } : {}),
 	};
 	licenseState = state;
 
 	if (degraded) {
 		console.warn(
-			`[license] DEGRADED: license for ${lic.orgId} expired ${lic.validUntil} and is past the ${graceDays}-day grace. Evaluation installs run for 90 days. Renew your license at https://mneurix.dev/credential-infrastructure`,
+			`[license] DEGRADED: license for ${lic.orgId} expired ${lic.validUntil ?? "(perpetual)"} and is past the ${graceDays}-day grace. Renew at https://mneurix.dev/credential-infrastructure`,
 		);
 	} else if (expired) {
 		console.warn(
-			`[license] EXPIRED: license for ${lic.orgId} expired ${lic.validUntil}. Booting with a warning; proctoring still active. Renew within the ${graceDays}-day grace at https://mneurix.dev/credential-infrastructure`,
+			`[license] EXPIRED: license for ${lic.orgId} expired ${lic.validUntil}. Booting with a warning. Renew within the ${graceDays}-day grace at https://mneurix.dev/credential-infrastructure`,
 		);
 	}
 	return state;
