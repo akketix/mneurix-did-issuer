@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Mneurix. Licensed under the Elastic License 2.0 (ELv2) — see LICENSE.
 // You may not remove or circumvent license keys, or re-host this as a managed service.
 
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { serve } from "@hono/node-server";
 import { pathToFileURL } from "node:url";
 import { requireServiceToken } from "./serviceAuth";
@@ -31,20 +31,25 @@ import { assertPlatformLicense, getLicenseState } from "@mneurix/licensing";
 // Run platform license boot guard (Phase F)
 assertPlatformLicense({});
 
-function checkIssuanceLicenseGate(c: any) {
+function checkIssuanceLicenseGate(c: Context) {
 	const state = getLicenseState();
-	if (state?.degraded) {
+	if (state?.degraded || state?.trialExpired) {
 		return jsonError(
 			c,
 			402,
-			"COMMERCIAL_LICENSE_EXPIRED",
-			"Commercial platform license expired and past 45-day grace period. Renew at https://mneurix.dev/credential-infrastructure",
+			"LICENSE_REQUIRED",
+			state?.trialExpired
+				? "The 90-day evaluation period has ended. Register your license at https://mneurix.dev/credential-infrastructure"
+				: "Platform license expired and past the grace period. Renew at https://mneurix.dev/credential-infrastructure",
 		);
+	}
+	if (state?.unlicensed && !state?.trialExpired) {
+		c.header("X-Mneurix-License-Warning", "TRIAL_MODE; register at https://mneurix.dev/credential-infrastructure");
 	}
 	if (state?.expired && state?.validUntil) {
 		c.header(
 			"X-Mneurix-License-Warning",
-			`COMMERCIAL_LICENSE_GRACE_PERIOD; valid_until=${state.validUntil}`,
+			`LICENSE_GRACE_PERIOD; valid_until=${state.validUntil}`,
 		);
 	}
 	return null;
@@ -366,6 +371,8 @@ v1.post("/vcs:issue", async (c) => {
 // gated): an operator mints a credential offer bound to a subject/vct/claims.
 // The wallet consumes the returned credential_offer (the pre_authorized_code).
 v1.post("/credential-offers", async (c) => {
+	const gate = checkIssuanceLicenseGate(c);
+	if (gate) return gate;
 	const body = (await c.req.json().catch(() => null)) as {
 		subjectId?: string;
 		vct?: string;
@@ -494,6 +501,8 @@ app.post("/oauth/token", async (c) => {
 // receives the SD-JWT VC. The access token is single-use + bound to the offer
 // (subject/vct/claims/alg minted by the operator). No service token here.
 app.post("/credentials", async (c) => {
+	const gate = checkIssuanceLicenseGate(c);
+	if (gate) return gate;
 	const auth = c.req.header("authorization") ?? "";
 	const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
 	if (!token) return jsonError(c, 401, "UNAUTHORIZED", "missing Bearer access token");
