@@ -27,7 +27,7 @@ async function mintOffer(alg?: "EdDSA" | "ES256") {
 	assert.equal(res.status, 201);
 	return (await res.json()) as {
 		credential_issuer: string; credential_configuration_ids: string[];
-		grants: { "pre-authorized_code": { pre_authorized_code: string; user_pin_required: boolean } };
+		grants: { "urn:ietf:params:oauth:grant-type:pre-authorized_code": { pre_authorized_code: string; user_pin_required: boolean } };
 	};
 }
 async function redeemToken(code: string) {
@@ -48,9 +48,9 @@ test("1.1 OID4VCI: mint offer -> redeem token -> fetch credential (EdDSA, defaul
 	const offer = await mintOffer();
 	assert.equal(offer.credential_issuer, ISSUER_URL);
 	assert.deepEqual(offer.credential_configuration_ids, [`${ISSUER_URL}/vct/achievement`]);
-	const code = offer.grants["pre-authorized_code"].pre_authorized_code;
+	const code = offer.grants["urn:ietf:params:oauth:grant-type:pre-authorized_code"].pre_authorized_code;
 	assert.ok(code);
-	assert.equal(offer.grants["pre-authorized_code"].user_pin_required, false);
+	assert.equal(offer.grants["urn:ietf:params:oauth:grant-type:pre-authorized_code"].user_pin_required, false);
 
 	const tok = await redeemToken(code);
 	assert.equal(tok.status, 200);
@@ -65,7 +65,7 @@ test("1.1 OID4VCI: mint offer -> redeem token -> fetch credential (EdDSA, defaul
 
 test("1.1 OID4VCI: ES256 flow — header alg=ES256, iss=HTTPS issuer, signature verifies against the P-256 JWK", async () => {
 	const offer = await mintOffer("ES256");
-	const code = offer.grants["pre-authorized_code"].pre_authorized_code;
+	const code = offer.grants["urn:ietf:params:oauth:grant-type:pre-authorized_code"].pre_authorized_code;
 	const tok = await redeemToken(code);
 	assert.equal(tok.status, 200);
 	const cred = await fetchCredential(tok.body.access_token!);
@@ -85,7 +85,7 @@ test("1.1 OID4VCI: ES256 flow — header alg=ES256, iss=HTTPS issuer, signature 
 
 test("1.1 OID4VCI: single-use replay protection (access token + code)", async () => {
 	const offer = await mintOffer();
-	const code = offer.grants["pre-authorized_code"].pre_authorized_code;
+	const code = offer.grants["urn:ietf:params:oauth:grant-type:pre-authorized_code"].pre_authorized_code;
 	const tok = await redeemToken(code);
 	assert.equal(tok.status, 200);
 	const cred = await fetchCredential(tok.body.access_token!);

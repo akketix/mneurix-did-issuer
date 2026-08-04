@@ -62,7 +62,7 @@ export interface CreateOfferResult {
 		credential_issuer: string;
 		credential_configuration_ids: string[];
 		grants: {
-			"pre-authorized_code": { pre_authorized_code: string; user_pin_required: false };
+			"urn:ietf:params:oauth:grant-type:pre-authorized_code": { pre_authorized_code: string; user_pin_required: boolean };
 		};
 	};
 	pre_authorized_code: string;
@@ -88,7 +88,7 @@ export function createCredentialOffer(issuerUrl: string, input: CreateOfferInput
 		credential_offer: {
 			credential_issuer: issuerUrl,
 			credential_configuration_ids: [input.vct],
-			grants: { "pre-authorized_code": { pre_authorized_code: code, user_pin_required: false } },
+			grants: { "urn:ietf:params:oauth:grant-type:pre-authorized_code": { pre_authorized_code: code, user_pin_required: false } },
 		},
 		pre_authorized_code: code,
 		expires_in: Math.floor(OFFER_TTL_MS / 1000),

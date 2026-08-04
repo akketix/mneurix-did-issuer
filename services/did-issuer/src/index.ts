@@ -8,7 +8,7 @@ import { requireServiceToken } from "./serviceAuth";
 import { jsonError } from "./errors";
 import { openApiDoc } from "./openapi";
 import { buildDidDocument, buildDidDocumentMulti, originFromDid, didFor, didHash, publicKeyJwkFromPem, type DidMethod } from "./did";
-import { loadOrCreateIssuerKey, rotateIssuerKey, getKeyByKid, knownKids, loadOrCreateP256IssuerKey, signEs256Jwt } from "./keys";
+import { loadOrCreateIssuerKey, rotateIssuerKey, getKeyByKid, knownKids, loadOrCreateP256IssuerKey, signEs256Jwt, persistP256Cert } from "./keys";
 import { generateSelfSignedCert } from "./x509";
 import { putDid, getDid, setPublished } from "./store";
 import { loadOriginsFromEnv, originListFromUrls } from "./origins";
@@ -73,7 +73,11 @@ const ISSUER_URL = (process.env.MNEURIX_DID_ISSUER_URL ?? "https://did-issuer.mn
 // HAIP §6.1.1: the ES256 SD-JWT VC carries the issuer cert chain in `x5c`. v1
 // generates a self-signed DEV cert (exercises the x5c plumbing); prod replaces it
 // with an IACA-issued cert (procurement). Derived from the P-256 key at boot.
-p256Key.x5c = generateSelfSignedCert(p256Key, new URL(ISSUER_URL).host);
+// M-4 fix: only generate the cert if it wasn't loaded from the persisted key file.
+if (!p256Key.x5c) {
+	p256Key.x5c = generateSelfSignedCert(p256Key, new URL(ISSUER_URL).host);
+	persistP256Cert(process.env.MNEURIX_KEY_DIR, p256Key.x5c);
+}
 const ISSUER_NAME = process.env.MNEURIX_ISSUER_NAME ?? "Mneurix";
 const issuerDid = didFor(ISSUER_ORIGIN);
 function currentVerificationMethod(): string {
@@ -515,16 +519,26 @@ app.get("/.well-known/oauth-credential-issuer", (c) => {
 
 // OID4VCI token endpoint: redeem a pre-authorized_code for an access token.
 app.post("/oauth/token", async (c) => {
-	const body = (await c.req.json().catch(() => null)) as {
-		grant_type?: string;
-		pre_authorized_code?: string;
-	} | null;
-	if (!body || body.grant_type !== "urn:ietf:params:oauth:grant-type:pre-authorized_code" || !body.pre_authorized_code) {
+	// M-3 fix: accept form-encoded (RFC 6749 §4.1.1) OR JSON (wallets may use either).
+	let grantType: string | undefined;
+	let code: string | undefined;
+	const ct = c.req.header("content-type") ?? "";
+	if (ct.includes("application/json")) {
+		const body = await c.req.json().catch(() => null) as { grant_type?: string; pre_authorized_code?: string } | null;
+		grantType = body?.grant_type;
+		code = body?.pre_authorized_code;
+	} else {
+		const form = await c.req.parseBody().catch(() => null) as Record<string, string | File> | null;
+		grantType = typeof form?.grant_type === "string" ? form.grant_type : undefined;
+		code = typeof form?.pre_authorized_code === "string" ? form.pre_authorized_code : undefined;
+	}
+	if (grantType !== "urn:ietf:params:oauth:grant-type:pre-authorized_code" || !code) {
 		return jsonError(c, 400, "INVALID_REQUEST", "grant_type must be pre-authorized_code + pre_authorized_code required");
 	}
-	const result = exchangePreAuthorizedCode(body.pre_authorized_code);
+	const result = exchangePreAuthorizedCode(code);
 	if ("error" in result) return jsonError(c, 400, "INVALID_GRANT", result.error);
-	return c.json(result, 200);
+	// M-3 fix: RFC 6749 §5.1 requires Cache-Control: no-store on token responses.
+	return c.json(result, 200, { "Cache-Control": "no-store", "Pragma": "no-cache" });
 });
 
 // OID4VCI credential endpoint: the wallet posts the Bearer access token +
@@ -557,7 +571,7 @@ app.post("/credentials", async (c) => {
 	} catch (e) {
 		return jsonError(c, 502, "ISSUER_ERROR", `cannot issue credential: ${(e as Error).message}`);
 	}
-	return c.json({ format: "dc+sd-jwt", credential: result.credential }, 200);
+	return c.json({ format: "dc+sd-jwt", credential: result.credential }, 200, { "Cache-Control": "no-store", "Pragma": "no-cache" });
 });
 
 // OID4VP response receiver (POST /openid4vp/response, wallet-facing, public):
