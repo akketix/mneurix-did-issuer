@@ -65,6 +65,16 @@ export function loadOrCreateP256IssuerKey(dir: string | undefined): IssuerP256Ke
 	return k;
 }
 
+/** Persist the x5c cert chain alongside the P-256 key (so it's stable across restarts). */
+export function persistP256Cert(dir: string | undefined, x5c: string[]): void {
+	if (!dir) return;
+	const file = join(dir, "issuer-p256.json");
+	if (!existsSync(file)) return;
+	const existing = JSON.parse(readFileSync(file, "utf8")) as IssuerP256Key;
+	existing.x5c = x5c;
+	writeFileSync(file, JSON.stringify(existing), { mode: 0o600 });
+}
+
 // --- M6: key rotation + key store -------------------------------------------
 // In-memory store of every issuer key the service has held, keyed by `kid`, so
 // that VCs signed by a pre-rotation key stay verifiable after rotation (the old
