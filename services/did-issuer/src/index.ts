@@ -568,12 +568,21 @@ app.post("/openid4vp/response", async (c) => {
 	const session = resolveSession(state, nonce);
 	if (!session) return jsonError(c, 401, "UNAUTHORIZED", "no matching verifier session (state/nonce)");
 	consumeSession(state); // consume BEFORE the async verify (closes the concurrent-replay race; the wallet does not retry the same session)
+	// H-1 fix: check the presented count matches the requested DCQL query count
+	if (session.vcts.length > 0 && vpTokens.length !== session.vcts.length) {
+		return jsonError(c, 401, "UNAUTHORIZED", `expected ${session.vcts.length} credential(s), received ${vpTokens.length}`);
+	}
 	let lastResult: { verified: boolean; subject?: string; issuer?: string; reason?: string; status: string } | undefined;
 	for (const vpToken of vpTokens) {
 		let r: { verified: boolean; subject?: string; issuer?: string; reason?: string; status: string };
 		try {
 			const issuerJwt = vpToken.split("~")[0]!;
 			const hdr = JSON.parse(Buffer.from(issuerJwt.split(".")[0]!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { alg?: string };
+			// H-1 fix: check the presented vct matches the requested DCQL vct
+			const vcPayload = JSON.parse(Buffer.from(issuerJwt.split(".")[1]!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { vct?: string };
+			if (session.vcts.length > 0 && (!vcPayload.vct || !session.vcts.includes(vcPayload.vct))) {
+				return jsonError(c, 401, "UNAUTHORIZED", `credential vct "${vcPayload.vct ?? "(none)"}" does not match the requested type`);
+			}
 			r = hdr.alg === "ES256"
 				? await verifyEs256Presentation(vpToken, p256Key, { requireKeyBinding: true, nonce: session.nonce, aud: session.clientId })
 				: await verifyPresentation({ presentation: vpToken, requireKeyBinding: true, nonce: session.nonce, aud: session.clientId });
@@ -631,6 +640,12 @@ app.post("/openid4vp/response/:state", async (c) => {
 	}
 	if (!vpToken || !innerState) return jsonError(c, 400, "INVALID_REQUEST", "decrypted response missing vp_token + state");
 	if (innerState !== state) return jsonError(c, 401, "UNAUTHORIZED", "decrypted state does not match the response_uri state");
+	// H-1 fix: the decrypted vp_token must match the session's requested vct
+	const encIssuerJwt = vpToken.split("~")[0]!;
+	const encPayload = JSON.parse(Buffer.from(encIssuerJwt.split(".")[1]!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { vct?: string };
+	if (session.vcts.length > 0 && (!encPayload.vct || !session.vcts.includes(encPayload.vct))) {
+		return jsonError(c, 401, "UNAUTHORIZED", `credential vct "${encPayload.vct ?? "(none)"}" does not match the requested type`);
+	}
 	let result: { verified: boolean; subject?: string; issuer?: string; reason?: string; status: string };
 	try {
 		const issuerJwt = vpToken.split("~")[0]!;
