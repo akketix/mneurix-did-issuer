@@ -18,7 +18,7 @@ import { randomUUID } from "node:crypto";
 import { issueOb3 } from "./vc-issue";
 import { issueSdJwtVc, signIssuerJwt } from "./sdjwt";
 import { allocateOb3Status, allocateSdJwtStatus, getCredentialStatus, getEncodedStatusList } from "./status";
-import { createCredentialOffer, exchangePreAuthorizedCode, consumeAccessToken } from "./oid4vci";
+import { createCredentialOffer, exchangePreAuthorizedCode, consumeAccessToken, getCNonceForToken, consumeCNonce, verifyProofAsync } from "./oid4vci";
 import { createAuthorizationRequest, createSignedAuthorizationRequest, resolveSession, peekKbJwtNonce, consumeSession, getSessionByState, getRequestObject } from "./openid4vp";
 import { decryptResponse } from "./jwe";
 import { revokeKid } from "./revoked-kids";
@@ -560,6 +560,27 @@ app.post("/credentials", async (c) => {
 	if (!token) return jsonError(c, 401, "UNAUTHORIZED", "missing Bearer access token");
 	const offer = consumeAccessToken(token);
 	if (!offer) return jsonError(c, 401, "UNAUTHORIZED", "invalid or expired access token");
+
+	// M-2 fix: OID4VCI proof-of-possession. The wallet sends a proof JWT
+	// (signed by its holder key, containing the c_nonce from the token response).
+	// The issuer verifies the proof + extracts the holder key from it.
+	const cNonce = getCNonceForToken(token);
+	let holderJwk: Record<string, string> | undefined = offer.holderJwk;
+	if (cNonce) {
+		// A c_nonce was issued — the wallet MUST send a proof.
+		const body = await c.req.json().catch(() => null) as { proof?: { jwt?: string; proof_type?: string } } | null;
+		const proofJwt = body?.proof?.jwt;
+		if (!proofJwt) {
+			return jsonError(c, 400, "INVALID_REQUEST", "proof-of-possession required: send a proof.jwt containing the c_nonce");
+		}
+		const proofResult = await verifyProofAsync(proofJwt, cNonce);
+		if (!proofResult.valid || !proofResult.holderJwk) {
+			return jsonError(c, 401, "UNAUTHORIZED", "proof verification failed: invalid signature or nonce mismatch");
+		}
+		consumeCNonce(token); // single-use nonce
+		holderJwk = proofResult.holderJwk; // use the wallet's key, not the operator's
+	}
+
 	const oidcStatusListId = offer.alg === "ES256" ? `${ISSUER_URL}/statuslists/revocation/1?alg=ES256` : `${ISSUER_URL}/statuslists/revocation/1`;
 	const status = allocateSdJwtStatus(oidcStatusListId, "revocation", undefined);
 	const iss = offer.alg === "ES256" ? ISSUER_URL : issuerDid;
@@ -571,7 +592,7 @@ app.post("/credentials", async (c) => {
 			vct: offer.vct,
 			claims: offer.claims,
 			selectivelyDisclosable: offer.selectivelyDisclosable,
-			...(offer.holderJwk ? { holderJwk: offer.holderJwk } : {}),
+			...(holderJwk ? { holderJwk } : {}),
 			status,
 			verificationMethod: currentVerificationMethod(),
 			alg: offer.alg,
