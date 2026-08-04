@@ -126,11 +126,11 @@ export async function verifyPresentation(input: VerifyInput): Promise<VerifyResu
 		// `kid` may be the bare kid OR the full did:web#kid verificationMethod — accept both.
 		const kid = rawKid.includes("#") ? rawKid.slice(rawKid.lastIndexOf("#") + 1) : rawKid;
 
+		// Fail-closed: revoked signing key (checked BEFORE resolveIssuerKey so a
+		// tombstoned kid returns "revoked" even if the DID doc no longer has the method).
+		if (await isKidRevoked(kid)) return { verified: false, status: "revoked", kid, issuer: issuerDid, reason: "signing key revoked" };
 		const issuerKey = await resolveIssuerKey(issuerDid, kid);
 		if (!issuerKey) return { verified: false, status: "unavailable", kid, issuer: issuerDid, reason: "issuer key not resolvable" };
-
-		// Fail-closed: revoked signing key.
-		if (await isKidRevoked(kid)) return { verified: false, status: "revoked", kid, issuer: issuerDid, reason: "signing key revoked" };
 
 		// Verify the issuer signature over the full credential (no KB).
 		const sdJwtWithoutKb = `${issuerJwt}~${disclosures.join("~")}${disclosures.length > 0 ? "~" : ""}`;
@@ -176,10 +176,10 @@ export async function verifyPresentation(input: VerifyInput): Promise<VerifyResu
 	const issuerDid = credential.issuer.id;
 	if (!kid) return { verified: false, status: "rejected", reason: "missing kid in verificationMethod" };
 
+	// Fail-closed: revoked signing key (checked BEFORE resolveIssuerKey).
+	if (await isKidRevoked(kid)) return { verified: false, status: "revoked", kid, issuer: issuerDid, reason: "signing key revoked" };
 	const issuerKey = await resolveIssuerKey(issuerDid, kid);
 	if (!issuerKey) return { verified: false, status: "unavailable", kid, issuer: issuerDid, reason: "issuer key not resolvable" };
-
-	if (await isKidRevoked(kid)) return { verified: false, status: "revoked", kid, issuer: issuerDid, reason: "signing key revoked" };
 
 	const sigOk = await verifyOb3(credential, issuerKey);
 	if (!sigOk) return { verified: false, status: "rejected", kid, issuer: issuerDid, reason: "Data-Integrity proof invalid" };

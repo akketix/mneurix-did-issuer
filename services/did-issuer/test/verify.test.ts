@@ -50,26 +50,34 @@ async function verify(presentation: unknown, opts?: { requireKeyBinding?: boolea
 	return (await r.json()) as { verified: boolean; status: string; reason?: string };
 }
 
-test("M6: OB3 VC verifies; after rotate the old-key VC is rejected (fail-closed)", async () => {
+test("M6: OB3 VC verifies; rotation keeps the old key valid (H-3 fix); explicit revoke rejects", async () => {
 	await mint();
 	const oldVc = await issueOb3();
 	const r0 = await verify(oldVc);
 	assert.equal(r0.verified, true);
 	assert.equal(r0.status, "valid");
 
-	// Rotate → tombstones the old kid.
+	// Rotate → KEEPS the old kid valid (rotation is NOT revocation).
 	const rotate = await app.request(`/v1/dids/${enc(issuerDid)}/keys:rotate`, { method: "POST", headers: H });
 	assert.equal(rotate.status, 200);
+	const rotateBody = (await rotate.json()) as { retainedKid: string; newKid: string };
 
-	// The old VC (signed by the now-revoked kid) is rejected fail-closed.
+	// The old VC (signed by the old kid) STILL VERIFIES after rotation.
 	const oldResult = await verify(oldVc);
-	assert.equal(oldResult.verified, false);
-	assert.equal(oldResult.status, "revoked");
+	assert.equal(oldResult.verified, true, "old-key VC still verifies after rotation (H-3)");
+	assert.equal(oldResult.status, "valid");
 
 	// A freshly-issued VC (new kid) verifies.
 	const newVc = await issueOb3();
 	const r2 = await verify(newVc);
 	assert.equal(r2.verified, true);
+
+	// Explicitly revoke the old kid → the old-key VC is now rejected (fail-closed).
+	const revoke = await app.request(`/v1/dids/${enc(issuerDid)}/keys:revoke`, { method: "POST", headers: H, body: JSON.stringify({ kid: rotateBody.retainedKid }) });
+	assert.equal(revoke.status, 200);
+	const oldResult2 = await verify(oldVc);
+	assert.equal(oldResult2.verified, false, "old-key VC rejected after explicit revoke");
+	assert.equal(oldResult2.status, "revoked");
 	assert.equal(r2.status, "valid");
 });
 
@@ -122,4 +130,13 @@ test("M6: GET /credentials/:id/status returns valid for an issued OB3 credential
 	const b = (await r.json()) as { state: string; revoked: boolean };
 	assert.equal(b.state, "valid");
 	assert.equal(b.revoked, false);
+});
+
+test("H-3: revoking the active signing key without a successor → 400 (revoke guard)", async () => {
+	await mint();
+	// Try to revoke the active key (no rotation first) → should be refused.
+	const revoke = await app.request(`/v1/dids/${enc(issuerDid)}/keys:revoke`, { method: "POST", headers: H, body: JSON.stringify({}) });
+	assert.equal(revoke.status, 400, "revoking the active key without a successor → 400");
+	const body = (await revoke.json()) as { error: { message: string } };
+	assert.match(body.error.message, /rotate first/i);
 });
