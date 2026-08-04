@@ -210,15 +210,33 @@ async function verifySdJwtVcImpl(
 	}
 	const [headerB64, payloadB64, sigB64] = jwtParts as [string, string, string];
 	const header = JSON.parse(b64urlDecode(headerB64).toString("utf8")) as Record<string, unknown>;
+	// M-1 fix: check typ (dc+sd-jwt or vc+sd-jwt transitional). Reject other types
+	// to prevent cross-protocol confusion (e.g. a status-list JWT verifying as a credential).
+	const typ = header.typ as string | undefined;
+	if (typ !== "dc+sd-jwt" && typ !== "vc+sd-jwt") {
+		return { signatureValid: false, header, processedPayload: null, disclosures: [], allDisclosuresReferenced: false };
+	}
 	const payload = JSON.parse(b64urlDecode(payloadB64).toString("utf8")) as Record<string, unknown>;
 	const signingInput = Buffer.from(`${headerB64}.${payloadB64}`, "ascii");
 	const signatureValid = await sigVerify(signingInput, sigB64);
 
 	// Process disclosures: compute hash, match against _sd, insert claim.
+	// M-1 fix: RFC 9901 §7.1 conformance checks.
+	// (a) Check _sd_alg (default sha-256; reject anything else).
+	const sdAlg = payload._sd_alg;
+	if (sdAlg !== undefined && sdAlg !== "sha-256") {
+		return { signatureValid: false, header, processedPayload: null, disclosures: [], allDisclosuresReferenced: false };
+	}
+	// (b) Reject duplicate digests in _sd.
 	const sdArray = Array.isArray(payload._sd) ? (payload._sd as string[]) : [];
 	const sdSet = new Set(sdArray);
+	if (sdSet.size !== sdArray.length) {
+		return { signatureValid: false, header, processedPayload: null, disclosures: [], allDisclosuresReferenced: false };
+	}
 	const disclosures: Array<[string, string, unknown]> = [];
-	const processed: Record<string, unknown> = { ...payload };
+	// (c) Use Object.create(null) to prevent __proto__ pollution.
+	const processed = Object.create(null) as Record<string, unknown>;
+	Object.assign(processed, payload);
 	let allReferenced = true;
 	for (const d of disclosureStrings) {
 		const parsed = JSON.parse(b64urlDecode(d).toString("utf8")) as [string, string, unknown];
@@ -227,6 +245,10 @@ async function verifySdJwtVcImpl(
 		if (sdSet.has(hash)) {
 			// §4.2.4.1 object-property disclosure: [salt, claimName, value]
 			const [, claimName, value] = parsed;
+			// (d) Reject claim collisions.
+			if (claimName in processed) {
+				return { signatureValid: false, header, processedPayload: null, disclosures: [], allDisclosuresReferenced: false };
+			}
 			processed[claimName] = value;
 		} else {
 			allReferenced = false;

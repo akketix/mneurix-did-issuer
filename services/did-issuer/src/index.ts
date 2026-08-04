@@ -293,14 +293,32 @@ v1.post("/presentations:verify", async (c) => {
 	if (!body || body.presentation === undefined || body.presentation === null) {
 		return jsonError(c, 400, "BAD_REQUEST", "presentation is required");
 	}
-	let result: Awaited<ReturnType<typeof verifyPresentation>>;
+	// M-6 fix: dispatch on the issuer-JWT alg (ES256 -> verifyEs256Presentation, else verifyPresentation)
+	let result: { verified: boolean; subject?: string; issuer?: string; status: string; kid?: string; reason?: string };
 	try {
-		result = await verifyPresentation({
-			presentation: body.presentation as Parameters<typeof verifyPresentation>[0]["presentation"],
-			...(body.requireKeyBinding ? { requireKeyBinding: body.requireKeyBinding } : {}),
-			...(body.nonce ? { nonce: body.nonce } : {}),
-			...(body.aud ? { aud: body.aud } : {}),
-		});
+		if (typeof body.presentation === "string" && body.presentation.includes("~")) {
+			const issuerJwt = body.presentation.split("~")[0]!;
+			const hdr = JSON.parse(Buffer.from(issuerJwt.split(".")[0]!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { alg?: string };
+			result = hdr.alg === "ES256"
+				? await verifyEs256Presentation(body.presentation, p256Key, {
+						...(body.requireKeyBinding ? { requireKeyBinding: body.requireKeyBinding } : {}),
+						...(body.nonce ? { nonce: body.nonce } : {}),
+						...(body.aud ? { aud: body.aud } : {}),
+					})
+				: await verifyPresentation({
+						presentation: body.presentation as Parameters<typeof verifyPresentation>[0]["presentation"],
+						...(body.requireKeyBinding ? { requireKeyBinding: body.requireKeyBinding } : {}),
+						...(body.nonce ? { nonce: body.nonce } : {}),
+						...(body.aud ? { aud: body.aud } : {}),
+					});
+		} else {
+			result = await verifyPresentation({
+				presentation: body.presentation as Parameters<typeof verifyPresentation>[0]["presentation"],
+				...(body.requireKeyBinding ? { requireKeyBinding: body.requireKeyBinding } : {}),
+				...(body.nonce ? { nonce: body.nonce } : {}),
+				...(body.aud ? { aud: body.aud } : {}),
+			});
+		}
 	} catch {
 		return c.json({ verified: false, status: "rejected", reason: "malformed presentation" });
 	}
