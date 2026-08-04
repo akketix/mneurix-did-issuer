@@ -19,6 +19,8 @@ export interface VerifierSession {
 	nonce: string;
 	state: string;
 	vct: string;
+	/** All requested vct values (for DCQL enforcement — the receiver checks each presented credential's vct is in this list). */
+	vcts: string[];
 	claims: string[];
 	clientId: string;
 	responseUri: string;
@@ -155,6 +157,7 @@ export function createAuthorizationRequest(issuerUrl: string, input: CreateAuthR
 		nonce,
 		state,
 		vct: queries[0]!.vct,
+		vcts: queries.map((q) => q.vct),
 		claims,
 		clientId,
 		responseUri,
@@ -247,7 +250,7 @@ export function createSignedAuthorizationRequest(issuerUrl: string, p256Key: Iss
 	const requestUri = `${issuerUrl}/openid4vp/request/${state}`;
 	const params = new URLSearchParams({ client_id: clientId, request_uri: requestUri, request_uri_method: "get" });
 	const uri = `openid4vp://?${params.toString()}`;
-	const session: VerifierSession = { nonce, state, vct: input.vct!, claims, clientId, responseUri, createdAt: Date.now(), consumed: false };
+	const session: VerifierSession = { nonce, state, vct: input.vct!, vcts: [input.vct!], claims, clientId, responseUri, createdAt: Date.now(), consumed: false };
 	sessions.set(state, session);
 	return { uri, dcql_query: dcqlQuery, request_object: requestObject, request_uri: requestUri, session: { nonce, state, responseUri, vct: input.vct!, claims } };
 }
