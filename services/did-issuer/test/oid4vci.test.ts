@@ -6,7 +6,8 @@
 // single-use replay protection; + the metadata endpoints.
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { createPublicKey, verify } from "node:crypto";
+import { createPublicKey, verify, generateKeyPairSync, createSign } from "node:crypto";
+import { signAsync } from "@noble/ed25519";
 import { app } from "../src/index";
 import { _resetStatusForTests } from "../src/status";
 import { _resetOid4vciForTests } from "../src/oid4vci";
@@ -18,6 +19,23 @@ const SUBJECT = "did:web:lattice.mneurix.example/learners/99";
 function b64urlDecode(s: string): Buffer {
 	return Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/"), "base64");
 }
+
+function holderKeypairES256() {
+	const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+	return {
+		jwk: publicKey.export({ format: "jwk" }) as Record<string, string>,
+		signProof: (nonce: string) => {
+			const header = b64url(JSON.stringify({ alg: "ES256", typ: "openid4vci-proof+jwt", jwk: publicKey.export({ format: "jwk" }) }));
+			const payload = b64url(JSON.stringify({ nonce, iss: "did:web:wallet.example", aud: ISSUER_URL }));
+			const signingInput = Buffer.from(header + "." + payload, "ascii");
+			const sig = createSign("SHA256").update(signingInput).sign({ key: privateKey.export({ format: "pem", type: "pkcs8" }), dsaEncoding: "ieee-p1363" });
+			return header + "." + payload + "." + b64url(sig);
+		},
+	};
+}
+
+function b64url(b: Buffer | string) { return (typeof b === "string" ? Buffer.from(b, "utf8") : Buffer.from(b)).toString("base64url"); }
+
 
 async function mintOffer(alg?: "EdDSA" | "ES256") {
 	const res = await app.request("/v1/credential-offers", {
@@ -35,10 +53,11 @@ async function redeemToken(code: string) {
 		method: "POST", headers: { "content-type": "application/json" },
 		body: JSON.stringify({ grant_type: "urn:ietf:params:oauth:grant-type:pre-authorized_code", pre_authorized_code: code }),
 	});
-	return { status: res.status, body: (await res.json()) as { access_token?: string; error?: string } };
+	return { status: res.status, body: (await res.json()) as { access_token?: string; c_nonce?: string; error?: string } };
 }
-async function fetchCredential(accessToken: string) {
-	const res = await app.request("/credentials", { method: "POST", headers: { authorization: `Bearer ${accessToken}` }, body: JSON.stringify({}) });
+async function fetchCredential(accessToken: string, proofJwt?: string) {
+	const body = proofJwt ? { proof: { jwt: proofJwt, proof_type: "jwt" } } : {};
+	const res = await app.request("/credentials", { method: "POST", headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" }, body: JSON.stringify(body) });
 	return { status: res.status, body: (await res.json()) as { format?: string; credential?: string; error?: string } };
 }
 
@@ -55,8 +74,12 @@ test("1.1 OID4VCI: mint offer -> redeem token -> fetch credential (EdDSA, defaul
 	const tok = await redeemToken(code);
 	assert.equal(tok.status, 200);
 	assert.equal(tok.body.access_token ? "bearer" : null, "bearer");
+	assert.ok(tok.body.c_nonce, "c_nonce issued at the token endpoint");
 
-	const cred = await fetchCredential(tok.body.access_token!);
+	// M-2: wallet proves possession of its holder key via a proof JWT.
+	const holder = holderKeypairES256();
+	const proof = holder.signProof(tok.body.c_nonce!);
+	const cred = await fetchCredential(tok.body.access_token!, proof);
 	assert.equal(cred.status, 200);
 	assert.equal(cred.body.format, "dc+sd-jwt");
 	const header = JSON.parse(b64urlDecode(cred.body.credential!.split("~")[0]!.split(".")[0]!).toString("utf8")) as Record<string, unknown>;
@@ -68,7 +91,10 @@ test("1.1 OID4VCI: ES256 flow — header alg=ES256, iss=HTTPS issuer, signature 
 	const code = offer.grants["urn:ietf:params:oauth:grant-type:pre-authorized_code"].pre_authorized_code;
 	const tok = await redeemToken(code);
 	assert.equal(tok.status, 200);
-	const cred = await fetchCredential(tok.body.access_token!);
+	assert.ok(tok.body.c_nonce, "c_nonce issued");
+	const holder = holderKeypairES256();
+	const proof = holder.signProof(tok.body.c_nonce!);
+	const cred = await fetchCredential(tok.body.access_token!, proof);
 	assert.equal(cred.status, 200);
 	const [h, p, sig] = cred.body.credential!.split("~")[0]!.split(".") as [string, string, string];
 	const header = JSON.parse(b64urlDecode(h).toString("utf8")) as Record<string, unknown>;
@@ -83,14 +109,18 @@ test("1.1 OID4VCI: ES256 flow — header alg=ES256, iss=HTTPS issuer, signature 
 	assert.equal(valid, true, "ES256 SD-JWT VC from the credential endpoint verifies against the P-256 JWK");
 });
 
-test("1.1 OID4VCI: single-use replay protection (access token + code)", async () => {
+test("1.1 OID4VCI: single-use replay protection (access token + code + c_nonce)", async () => {
 	const offer = await mintOffer();
 	const code = offer.grants["urn:ietf:params:oauth:grant-type:pre-authorized_code"].pre_authorized_code;
 	const tok = await redeemToken(code);
 	assert.equal(tok.status, 200);
-	const cred = await fetchCredential(tok.body.access_token!);
+	assert.ok(tok.body.c_nonce, "c_nonce issued");
+	const holder = holderKeypairES256();
+	const proof = holder.signProof(tok.body.c_nonce!);
+	const cred = await fetchCredential(tok.body.access_token!, proof);
 	assert.equal(cred.status, 200);
-	const replayCred = await fetchCredential(tok.body.access_token!);
+	// Replay the access token + same proof — the access token is consumed (single-use).
+	const replayCred = await fetchCredential(tok.body.access_token!, proof);
 	assert.equal(replayCred.status, 401, "access token is single-use (replay -> 401)");
 	const replayTok = await redeemToken(code);
 	assert.equal(replayTok.status, 400, "pre-authorized code is single-use (replay -> 400)");

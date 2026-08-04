@@ -34,6 +34,8 @@ interface AccessTokenEntry {
 }
 
 const offers = new Map<string, CredentialOffer>();
+/** c_nonce store: token -> { nonce, consumed } (single-use, same TTL as the token). */
+const cNonces = new Map<string, { nonce: string; consumed: boolean; createdAt: number; holderJwk?: Record<string, string> }>();
 const tokens = new Map<string, AccessTokenEntry>();
 
 const OFFER_TTL_MS = 10 * 60 * 1000; // 10 min
@@ -97,7 +99,7 @@ export function createCredentialOffer(issuerUrl: string, input: CreateOfferInput
 
 /** Wallet-facing token endpoint: redeem a pre-authorized_code for an access
  * token. Single-use code; fail-closed on unknown/expired/consumed. */
-export function exchangePreAuthorizedCode(code: string): { access_token: string; token_type: "bearer"; expires_in: number; c_nonce?: string } | { error: string } {
+export function exchangePreAuthorizedCode(code: string): { access_token: string; token_type: "bearer"; expires_in: number; c_nonce?: string; c_nonce_expires_in?: number } | { error: string } {
 	const offer = offers.get(code);
 	if (!offer || offer.consumed) return { error: "invalid_grant" };
 	if (Date.now() - offer.createdAt > OFFER_TTL_MS) {
@@ -105,9 +107,11 @@ export function exchangePreAuthorizedCode(code: string): { access_token: string;
 		return { error: "invalid_grant" };
 	}
 	const token = randomSecret();
+	const cNonce = randomSecret();
 	tokens.set(token, { token, offer, createdAt: Date.now(), consumed: false });
+	cNonces.set(token, { nonce: cNonce, consumed: false, createdAt: Date.now() });
 	offer.consumed = true; // single-use code
-	return { access_token: token, token_type: "bearer", expires_in: Math.floor(TOKEN_TTL_MS / 1000) };
+	return { access_token: token, token_type: "bearer", expires_in: Math.floor(TOKEN_TTL_MS / 1000), c_nonce: cNonce, c_nonce_expires_in: Math.floor(TOKEN_TTL_MS / 1000) };
 }
 
 /** Resolve (peek) an access token for the credential endpoint. */
@@ -130,7 +134,99 @@ export function consumeAccessToken(token: string): CredentialOffer | null {
 	return entry.offer;
 }
 
+/** Verify a wallet proof-of-possession JWT (OID4VCI §4 + Appendix E).
+ * The proof is a JWT signed by the wallet's holder key, containing the c_nonce
+ * the issuer provided at the token endpoint. The issuer verifies the signature
+ * against the holder's public key (from the proof header jwk or the cnf claim)
+ * + checks the nonce matches. Returns the holder JWK on success, null on failure. */
+export function verifyProof(
+	proofJwt: string,
+	expectedNonce: string,
+): { valid: boolean; holderJwk?: Record<string, string> } {
+	try {
+		const parts = proofJwt.split(".");
+		if (parts.length !== 3) return { valid: false };
+		const [h, p] = parts as [string, string, string];
+		const header = JSON.parse(Buffer.from(h.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { alg?: string; jwk?: Record<string, string> };
+		const payload = JSON.parse(Buffer.from(p.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { nonce?: string; iss?: string; aud?: string; cnf?: { jwk?: Record<string, string> } };
+		// Check the nonce matches
+		if (payload.nonce !== expectedNonce) return { valid: false };
+		// Extract the holder JWK: from the header jwk (jwt proof type) or the payload cnf.jwk
+		const holderJwk = header.jwk ?? payload.cnf?.jwk;
+		if (!holderJwk || !holderJwk.kty) return { valid: false };
+		// Verify the JWT signature against the holder JWK
+		const { createPublicKey, verify } = require("node:crypto");
+		const pub = createPublicKey({ key: holderJwk, format: "jwk" });
+		const signingInput = Buffer.from(h + "." + p, "ascii");
+		const sig = Buffer.from(parts[2]!.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+		let valid = false;
+		if (header.alg === "ES256") {
+			valid = verify("SHA256", signingInput, { key: pub, dsaEncoding: "ieee-p1363" }, sig);
+		} else if (header.alg === "EdDSA") {
+			const { verifyAsync } = require("@noble/ed25519");
+			// noble verify is async — but we can't await in a sync function.
+			// Return the holder JWK + let the caller verify the signature async.
+			// Actually, let's make this function async.
+			return { valid: false }; // placeholder — will be replaced by the async version below
+		}
+		return { valid, holderJwk };
+	} catch {
+		return { valid: false };
+	}
+}
+
+/** Async version of verifyProof — handles both ES256 + EdDSA holder keys. */
+export async function verifyProofAsync(
+	proofJwt: string,
+	expectedNonce: string,
+): Promise<{ valid: boolean; holderJwk?: Record<string, string> }> {
+	try {
+		const parts = proofJwt.split(".");
+		if (parts.length !== 3) return { valid: false };
+		const [h, p, sigB64] = parts as [string, string, string];
+		const header = JSON.parse(Buffer.from(h.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { alg?: string; jwk?: Record<string, string> };
+		const payload = JSON.parse(Buffer.from(p.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { nonce?: string; iss?: string; aud?: string; cnf?: { jwk?: Record<string, string> } };
+		if (payload.nonce !== expectedNonce) return { valid: false };
+		const holderJwk = header.jwk ?? payload.cnf?.jwk;
+		if (!holderJwk || !holderJwk.kty) return { valid: false };
+		const { createPublicKey, verify } = await import("node:crypto");
+		const signingInput = Buffer.from(h + "." + p, "ascii");
+		const sig = Buffer.from(sigB64.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+		if (header.alg === "ES256") {
+			const pub = createPublicKey({ key: holderJwk, format: "jwk" });
+			const valid = verify("SHA256", signingInput, { key: pub, dsaEncoding: "ieee-p1363" }, sig);
+			return { valid, holderJwk };
+		} else if (header.alg === "EdDSA") {
+			const { verifyAsync } = await import("@noble/ed25519");
+			const pub = createPublicKey({ key: holderJwk, format: "jwk" });
+			const pubPem = pub.export({ format: "pem", type: "spki" }) as string;
+			// noble needs the raw 32-byte public key — extract from the JWK x
+			const pubRaw = Buffer.from(holderJwk.x!, "base64url");
+			const valid = await verifyAsync(new Uint8Array(sig), signingInput, new Uint8Array(pubRaw));
+			return { valid, holderJwk };
+		}
+		return { valid: false };
+	} catch {
+		return { valid: false };
+	}
+}
+
+/** Get the c_nonce for a given access token (or null if expired/consumed). */
+export function getCNonceForToken(token: string): string | null {
+	const entry = cNonces.get(token);
+	if (!entry || entry.consumed) return null;
+	if (Date.now() - entry.createdAt > TOKEN_TTL_MS) { cNonces.delete(token); return null; }
+	return entry.nonce;
+}
+
+/** Consume the c_nonce for a token (single-use — after the proof is verified). */
+export function consumeCNonce(token: string): void {
+	const entry = cNonces.get(token);
+	if (entry) entry.consumed = true;
+}
+
 export function _resetOid4vciForTests(): void {
 	offers.clear();
 	tokens.clear();
+	cNonces.clear();
 }
