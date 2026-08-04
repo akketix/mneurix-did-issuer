@@ -55,16 +55,16 @@ function kidOf(vm: string): string {
 	return vm.slice(vm.lastIndexOf("#") + 1);
 }
 
-test("M6: rotate keeps the DID stable, tombstones the old kid, new key signs", async () => {
+test("M6: rotate keeps the DID stable, retains the old kid (H-3 fix), new key signs", async () => {
 	const { credential: oldVc, oldKid } = await mintAndIssue();
 	assert.equal(kidOf(oldVc.proof.verificationMethod), oldKid);
 
 	const rotate = await app.request(`/v1/dids/${enc(issuerDid)}/keys:rotate`, { method: "POST", headers: H });
 	assert.equal(rotate.status, 200);
-	const rb = (await rotate.json()) as { did: string; newKid: string; tombstonedKid: string; publishedTo: string[] };
+	const rb = (await rotate.json()) as { did: string; newKid: string; retainedKid: string; publishedTo: string[] };
 	assert.equal(rb.did, issuerDid); // DID stable
 	assert.notEqual(rb.newKid, oldKid);
-	assert.equal(rb.tombstonedKid, oldKid);
+	assert.equal(rb.retainedKid, oldKid, "old kid is retained (not tombstoned) after rotation");
 	assert.deepEqual(rb.publishedTo, []); // no origins configured → no publish
 
 	// The DID doc now carries BOTH verification methods; assertionMethod = new only.
@@ -84,8 +84,12 @@ test("M6: rotate keeps the DID stable, tombstones the old kid, new key signs", a
 	assert.equal(kidOf(ib2.credential.proof.verificationMethod), rb.newKid);
 });
 
-test("M6: revoke tombstones a kid + removes it from the DID doc", async () => {
+test("M6: revoke tombstones a kid + removes it from the DID doc (after rotation)", async () => {
 	const { oldKid } = await mintAndIssue();
+	// Rotate first (adds a new key; old key stays valid per H-3 fix).
+	const rotate = await app.request(`/v1/dids/${enc(issuerDid)}/keys:rotate`, { method: "POST", headers: H });
+	assert.equal(rotate.status, 200);
+	// Now revoke the OLD kid (no longer the active key -- the guard allows it).
 	const revoke = await app.request(`/v1/dids/${enc(issuerDid)}/keys:revoke`, {
 		method: "POST", headers: H, body: JSON.stringify({ kid: oldKid }),
 	});

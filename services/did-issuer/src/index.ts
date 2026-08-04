@@ -238,12 +238,13 @@ v1.post("/dids/:did/keys:rotate", requireOperator(["issuer", "revoker"]), async 
 		publishedTo = pub.publishedTo;
 	}
 
-	// Tombstone the old kid (signed by the NEW key) + flip the module issuer key.
-	await revokeKid(oldKid, newKey, `${did}#${newKey.kid}`);
+	// H-3 fix: keep the old kid VALID (rotation is NOT revocation -- existing
+	// credentials signed by the old key stay verifiable). Only keys:revoke
+	// tombstones (for compromise). Flip the module issuer key to the new key.
 	issuerKey = newKey;
 	putDid(did, document, newKey.kid);
 	if (publishedTo.length > 0) setPublished(did, publishedTo, didHash(document));
-	return c.json({ did, newKid: newKey.kid, tombstonedKid: oldKid, publishedTo, docHash: didHash(document) });
+	return c.json({ did, newKid: newKey.kid, retainedKid: oldKid, publishedTo, docHash: didHash(document) });
 });
 
 // POST /v1/dids/:did/keys:revoke — tombstone a kid + remove it from the DID doc;
@@ -254,6 +255,10 @@ v1.post("/dids/:did/keys:revoke", requireOperator(["revoker"]), async (c) => {
 	if (!stored) return jsonError(c, 404, "DID_NOT_FOUND", did + " is not in the local store (mint it first)");
 	const body = (await c.req.json().catch(() => ({}))) as { kid?: string };
 	const kid = body.kid ?? stored.kid;
+	// H-3 fix: refuse to revoke the active signing key without a successor.
+	if (kid === issuerKey.kid) {
+		return jsonError(c, 400, "BAD_REQUEST", "cannot revoke the active signing key -- rotate first (POST /v1/dids/" + did + "/keys:rotate)");
+	}
 	await revokeKid(kid, issuerKey, currentVerificationMethod());
 
 	// Rebuild the doc WITHOUT the revoked kid.
