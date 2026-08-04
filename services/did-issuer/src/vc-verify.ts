@@ -20,7 +20,7 @@ import { resolveDidWebIssuerKey } from "./didweb";
 import type { IssuerP256Key } from "./keys";
 import { getDid } from "./store";
 import { isKidRevoked } from "./revoked-kids";
-import { getCredentialStatus } from "./status";
+import { getCredentialStatus, isStatusRevoked } from "./status";
 import type { KeyMaterial, OpenBadgeCredential } from "@mneurix/shared";
 
 function b64urlDecode(s: string): Buffer {
@@ -158,7 +158,16 @@ export async function verifyPresentation(input: VerifyInput): Promise<VerifyResu
 			if (!kbOk) return { verified: false, status: "rejected", kid, issuer: issuerDid, ...(payload.sub ? { subject: payload.sub } : {}), reason: "KB-JWT invalid" };
 		}
 
-		return { verified: true, status: "valid", kid, issuer: issuerDid, ...(payload.sub ? { subject: payload.sub } : {}) };
+		// H-2: check the SD-JWT VC revocation status (local -- the status uri origin
+	// matches the issuer did:web host). Foreign status lists are a follow-up.
+	const sl = (payload as { status?: { status_list?: { uri?: string; idx?: number } } }).status?.status_list;
+	if (sl?.uri && typeof sl.idx === "number") {
+		const issHost = issuerDid.startsWith("did:web:") ? issuerDid.slice("did:web:".length).split(":")[0]! : "";
+		if (issHost && sl.uri.startsWith(`https://${issHost}`) && isStatusRevoked("revocation", sl.idx)) {
+			return { verified: false, status: "revoked", kid, issuer: issuerDid, ...(payload.sub ? { subject: payload.sub } : {}), reason: "credential is revoked" };
+		}
+	}
+	return { verified: true, status: "valid", kid, issuer: issuerDid, ...(payload.sub ? { subject: payload.sub } : {}) };
 	}
 
 	// --- OB3 Data-Integrity (object) ---
@@ -219,6 +228,15 @@ export async function verifyEs256Presentation(
 		const expectedSdHash = sha256B64url(sdJwtWithoutKb);
 		const kbOk = await verifyKbJwt(kbJwt, holderJwk, expectedSdHash, opts.nonce, opts.aud);
 		if (!kbOk) return { verified: false, status: "rejected", ...(payload.iss ? { issuer: payload.iss } : {}), ...(payload.sub ? { subject: payload.sub } : {}), reason: "KB-JWT invalid" };
+	}
+	// H-2: check the SD-JWT VC revocation status (local -- the status uri origin
+	// matches the issuer HTTPS origin). Foreign status lists are a follow-up.
+	const esSl = (payload as { status?: { status_list?: { uri?: string; idx?: number } } }).status?.status_list;
+	if (esSl?.uri && typeof esSl.idx === "number" && payload.iss) {
+		const essHost = payload.iss.startsWith("https://") ? payload.iss.slice("https://".length).split("/")[0]! : "";
+		if (essHost && esSl.uri.startsWith(`https://${essHost}`) && isStatusRevoked("revocation", esSl.idx)) {
+			return { verified: false, status: "revoked", ...(payload.iss ? { issuer: payload.iss } : {}), ...(payload.sub ? { subject: payload.sub } : {}), reason: "credential is revoked" };
+		}
 	}
 	return { verified: true, status: "valid", ...(payload.iss ? { issuer: payload.iss } : {}), ...(payload.sub ? { subject: payload.sub } : {}) };
 }
