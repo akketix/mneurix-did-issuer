@@ -70,6 +70,17 @@ export function generateSelfSignedCert(p256Key: IssuerP256Key, cn: string): stri
 	const serial = derInt(randomBytes(16));
 	const validity = derSeq(Buffer.concat([derUtcTime(utcNow(-1)), derUtcTime(utcNow(365))]));
 	const spki = createPublicKey(p256Key.publicKeyPem).export({ format: "der", type: "spki" }) as Buffer;
+	// M-13 fix: add BasicConstraints (CA:FALSE) + KeyUsage (digitalSignature) extensions.
+	const bcOid = "2.5.29.19";
+	const kuOid = "2.5.29.15";
+	// BasicConstraints: SEQUENCE { cA BOOLEAN FALSE }
+	const bcValue = derSeq(Buffer.concat([der(0x01, Buffer.from([0x00]))])); // BOOLEAN FALSE
+	// KeyUsage: BIT STRING with digitalSignature (bit 0 = 0x80, 7 unused bits)
+	const kuValue = der(0x03, Buffer.from([0x07, 0x80])); // BIT STRING, 7 unused, 0x80
+	// Extension = SEQUENCE { OID, OCTET STRING(extnValue) }
+	const bcExt = derSeq(Buffer.concat([derOid(bcOid), der(0x04, bcValue)]));
+	const kuExt = derSeq(Buffer.concat([derOid(kuOid), der(0x04, kuValue)]));
+	const extensions = derExplicit(3, derSeq(Buffer.concat([bcExt, kuExt])));
 	const tbs = derSeq(Buffer.concat([
 		derExplicit(0, derInt(Buffer.from([2]))), // version v3
 		serial,
@@ -78,6 +89,7 @@ export function generateSelfSignedCert(p256Key: IssuerP256Key, cn: string): stri
 		validity,
 		name(cn), // subject (self-signed)
 		spki, // subjectPublicKeyInfo (EC P-256)
+		extensions, // v3 extensions (BasicConstraints + KeyUsage)
 	]));
 	const sig = sign("sha256", tbs, { key: p256Key.privateKeyPem, dsaEncoding: "der" });
 	const cert = derSeq(Buffer.concat([tbs, sigAlg, derBitString(sig)]));

@@ -236,7 +236,11 @@ export function createSignedAuthorizationRequest(issuerUrl: string, p256Key: Iss
 	const responseUri = input.responseUri ?? `${issuerUrl}/openid4vp/response`;
 	const certDer = Buffer.from(p256Key.x5c![0]!, "base64");
 	const clientId = `x509_hash:${b64url(createHash("sha256").update(certDer).digest())}`;
+	// M-8 fix: RFC 9101 (JAR) requires iss + exp in the request object.
+	const nowMs = Date.now();
 	const requestObjectPayload: Record<string, unknown> = {
+		iss: clientId,
+		aud: issuerUrl,
 		response_type: "vp_token",
 		response_mode: "direct_post",
 		client_id: clientId,
@@ -244,6 +248,8 @@ export function createSignedAuthorizationRequest(issuerUrl: string, p256Key: Iss
 		nonce,
 		state,
 		dcql_query: dcqlQuery,
+		iat: Math.floor(nowMs / 1000),
+		exp: Math.floor((nowMs + 10 * 60 * 1000) / 1000), // 10-minute expiry
 	};
 	const requestObject = signEs256Jwt(requestObjectPayload, p256Key, p256Key.kid, "oauth-authz-req+jwt", p256Key.x5c);
 	requestObjects.set(state, requestObject);
