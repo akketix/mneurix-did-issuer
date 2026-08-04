@@ -128,6 +128,12 @@ export function getEncodedStatusList(purpose: StatusPurpose): string {
 export function getStatusListCount(purpose: StatusPurpose): number {
 	return listFor(purpose).count;
 }
+/** Check if the bit at `index` is revoked (1) for a purpose -- used by the SD-JWT VC
+ * verify path (H-2: revocation status check). Reads the in-memory bitstring. */
+export function isStatusRevoked(statusPurpose: StatusPurpose, index: number): boolean {
+	return listFor(statusPurpose).isRevoked(index);
+}
+
 export function _resetStatusForTests(): void {
 	lists.clear();
 	credentialStatus.clear();
