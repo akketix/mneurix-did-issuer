@@ -96,6 +96,12 @@ export const app = new Hono();
 // CISO encryption-at-rest enforcement (T4): refuse to boot in prod without
 // MNEURIX_REST_ENCRYPTION=attested or =app-dek.
 assertRestEncryptionInProd();
+// M-5 warning: revocation tombstones + status bits are in-memory only. A restart
+// resurrects revoked keys/credentials. Durable persistence is tracked as a
+// follow-up (M10); until then, warn in production.
+if (process.env.MNEURIX_ENV === "production") {
+	console.warn("[revocation] WARNING: revocation tombstones + status bits are in-memory only. A restart resurrects revoked keys/credentials. Durable persistence is a follow-up (M10).");
+}
 app.get("/health", (c) => c.json({ status: "ok", service: "did-issuer" }));
 app.get("/v1/openapi.json", (c) => c.json(openApiDoc));
 
@@ -280,7 +286,9 @@ v1.post("/dids/:did/keys:revoke", requireOperator(["revoker"]), async (c) => {
 		if (!pub.staged) return jsonError(c, 503, "PUBLISH_QUORUM_FAILED", `revoke publish failed quorum (${pub.confirmed}/${originList.origins.length})`, pub);
 		publishedTo = pub.publishedTo;
 	}
-	putDid(did, document, stored.kid);
+	// M-10 fix: update stored.kid if it was the revoked kid (prevent stale kid).
+	const newStoredKid = stored.kid === kid ? (assertionKids[0] ?? issuerKey.kid) : stored.kid;
+	putDid(did, document, newStoredKid);
 	if (publishedTo.length > 0) setPublished(did, publishedTo, didHash(document));
 	return c.json({ did, revokedKid: kid, publishedTo, docHash: didHash(document) });
 });
@@ -704,6 +712,19 @@ app.get("/openid4vp/request/:id", (c) => {
 	const jwt = getRequestObject(c.req.param("id"));
 	if (!jwt) return jsonError(c, 404, "NOT_FOUND", "no signed request object for that id");
 	return c.body(jwt, 200, { "content-type": "application/oauth-authz-req+jwt" });
+});
+
+// M-11 fix: serve the claimed-https redirect URL (GET /openid4vp) that the
+// openid4vp-redirect transport points at. A universal-links/app-links interceptor
+// catches this URL + opens the wallet; without the interceptor, this route
+// redirects to the openid4vp:// URI (same params) so a browser can still launch
+// a registered wallet handler.
+app.get("/openid4vp", (c) => {
+	const params = new URLSearchParams(c.req.query());
+	if (params.toString()) {
+		return c.redirect(`openid4vp://?${params.toString()}`, 302);
+	}
+	return c.json({ error: "missing openid4vp parameters" }, 400);
 });
 
 app.route("/v1", v1);
