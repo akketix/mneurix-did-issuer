@@ -93,6 +93,19 @@ function mintFor(origin: string): { did: string; document: ReturnType<typeof bui
 }
 
 export const app = new Hono();
+
+// Request logger (dev/debug, opt-in): method path status duration -> stdout.
+// Lets us see exactly which endpoints a wallet (AltMe) hits during an OID4VCI
+// flow. Gated behind MNEURIX_REQUEST_LOG=1 so production never ships per-request
+// stdout noise. Enable during wallet-integration testing only.
+if (process.env.MNEURIX_REQUEST_LOG === "1") {
+	app.use("/*", async (c, next) => {
+		const start = Date.now();
+		await next();
+		const ms = Date.now() - start;
+		console.log(`${c.req.method} ${c.req.path} ${c.res.status} ${ms}ms`);
+	});
+}
 // CISO encryption-at-rest enforcement (T4): refuse to boot in prod without
 // MNEURIX_REST_ENCRYPTION=attested or =app-dek.
 assertRestEncryptionInProd();
@@ -497,9 +510,14 @@ v1.post("/dids/:did/publish", async (c) => {
 
 // OID4VCI: OAuth 2.0 Authorization Server metadata (RFC 8414) — the
 // pre-authorized-code grant + the token endpoint (wallet-facing, public).
+// `authorization_endpoint` is advertised (pointing at /oauth/authorize) so that
+// wallets that probe for it during discovery don't silently abort; the
+// pre-authorized-code flow does not use it, but its absence has been observed to
+// cause conformant wallets to stall after metadata fetch + fall back to a browser.
 app.get("/.well-known/oauth-authorization-server", (c) => {
 	return c.json({
 		issuer: ISSUER_URL,
+		authorization_endpoint: `${ISSUER_URL}/oauth/authorize`,
 		token_endpoint: `${ISSUER_URL}/oauth/token`,
 		token_endpoint_auth_methods_supported: ["none"],
 		grant_types_supported: ["urn:ietf:params:oauth:grant-type:pre-authorized_code"],
@@ -508,22 +526,41 @@ app.get("/.well-known/oauth-authorization-server", (c) => {
 });
 
 // OID4VCI: credential-issuer metadata — the credential endpoint + the supported
-// credential configurations (the default achievement vct, dc+sd-jwt, both algs).
-app.get("/.well-known/oauth-credential-issuer", (c) => {
-	return c.json({
+// credential configurations (the default achievement vct, both SD-JWT VC format
+// labels for wallet compat). Served at BOTH the current spec path
+// `openid-credential-issuer` (draft-ietf-oauth-4-vc) and the older
+// `oauth-credential-issuer` alias for wallet compatibility. AltMe and other
+// conformant wallets fetch `openid-credential-issuer`; the older path is kept
+// for verifiers/SDKs still on the earlier draft. `authorization_servers` points
+// the wallet at this issuer's own oauth-authorization-server metadata for the
+// token endpoint.
+//
+// FORMAT COMPAT: the SD-JWT VC format identifier was renamed `vc+sd-jwt` ->
+// `dc+sd-jwt` in later drafts. Many wallets (AltMe, Talao) still key on
+// `vc+sd-jwt` and silently abort if they cannot find a config with a format
+// they recognise. We advertise BOTH: the primary config id (`<vct>`) uses
+// `vc+sd-jwt` (wallet-friendly, referenced by default offers); a secondary
+// config id (`<vct>#dc-sd-jwt`) advertises `dc+sd-jwt` for spec-latest clients.
+// The credential endpoint returns the format matching the config id redeemed.
+function credentialIssuerMetadata() {
+	const base = {
+		scope: "MneurixAchievement",
+		cryptographic_binding_methods_supported: ["did:web", "jwk"],
+		credential_signing_alg_values_supported: ["EdDSA", "ES256"],
+		vct: DEFAULT_VCT,
+	};
+	return {
 		credential_issuer: ISSUER_URL,
 		credential_endpoint: `${ISSUER_URL}/credentials`,
+		authorization_servers: [ISSUER_URL],
 		credential_configurations_supported: {
-			[DEFAULT_VCT]: {
-				format: "dc+sd-jwt",
-				scope: "MneurixAchievement",
-				cryptographic_binding_methods_supported: ["did:web", "jwk"],
-				credential_signing_alg_values_supported: ["EdDSA", "ES256"],
-				vct: DEFAULT_VCT,
-			},
+			[DEFAULT_VCT]: { ...base, format: "vc+sd-jwt" },
+			[`${DEFAULT_VCT}#dc-sd-jwt`]: { ...base, format: "dc+sd-jwt" },
 		},
-	});
-});
+	};
+}
+app.get("/.well-known/openid-credential-issuer", (c) => c.json(credentialIssuerMetadata()));
+app.get("/.well-known/oauth-credential-issuer", (c) => c.json(credentialIssuerMetadata()));
 
 // OID4VCI token endpoint: redeem a pre-authorized_code for an access token.
 app.post("/oauth/token", async (c) => {
@@ -600,7 +637,7 @@ app.post("/credentials", async (c) => {
 	} catch (e) {
 		return jsonError(c, 502, "ISSUER_ERROR", `cannot issue credential: ${(e as Error).message}`);
 	}
-	return c.json({ format: "dc+sd-jwt", credential: result.credential }, 200, { "Cache-Control": "no-store", "Pragma": "no-cache" });
+	return c.json({ format: offer.vct.endsWith("#dc-sd-jwt") ? "dc+sd-jwt" : "vc+sd-jwt", credential: result.credential }, 200, { "Cache-Control": "no-store", "Pragma": "no-cache" });
 });
 
 // OID4VP response receiver (POST /openid4vp/response, wallet-facing, public):

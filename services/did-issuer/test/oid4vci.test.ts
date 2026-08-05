@@ -81,7 +81,7 @@ test("1.1 OID4VCI: mint offer -> redeem token -> fetch credential (EdDSA, defaul
 	const proof = holder.signProof(tok.body.c_nonce!);
 	const cred = await fetchCredential(tok.body.access_token!, proof);
 	assert.equal(cred.status, 200);
-	assert.equal(cred.body.format, "dc+sd-jwt");
+	assert.equal(cred.body.format, "vc+sd-jwt");
 	const header = JSON.parse(b64urlDecode(cred.body.credential!.split("~")[0]!.split(".")[0]!).toString("utf8")) as Record<string, unknown>;
 	assert.equal(header.alg, "EdDSA");
 });
@@ -142,6 +142,6 @@ test("1.1 OID4VCI: metadata endpoints advertise the flow", async () => {
 	assert.equal(ci.credential_issuer, ISSUER_URL);
 	assert.equal(ci.credential_endpoint, `${ISSUER_URL}/credentials`);
 	const cfg = (ci.credential_configurations_supported as Record<string, Record<string, unknown>>)[`${ISSUER_URL}/vct/achievement`]!;
-	assert.equal(cfg.format, "dc+sd-jwt");
+	assert.equal(cfg.format, "vc+sd-jwt");
 	assert.ok((cfg.credential_signing_alg_values_supported as string[]).includes("ES256"));
 });
