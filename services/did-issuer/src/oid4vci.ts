@@ -225,6 +225,73 @@ export function consumeCNonce(token: string): void {
 	if (entry) entry.consumed = true;
 }
 
+// --- Authorization-code grant (wallet-initiated issuance) --------------------
+// The pre-authorized-code flow above is operator-initiated: the operator mints an
+// offer bound to a pre-known subject. The authorization-code flow is
+// wallet-initiated: the wallet redirects the learner to /oauth/authorize, the
+// learner authenticates (delegated to the lattice, or the did-issuer's own
+// minimal consent page when the lattice is unconfigured), the did-issuer issues
+// an authorization code, the wallet redeems it (+ PKCE verifier) at /oauth/token
+// for an access token, then calls /credentials. See oauth.ts for the auth-code
+// + PKCE state machine; the helpers below bridge the auth-code flow into the
+// shared token/c_nonce store so /credentials stays grant-agnostic.
+
+/** Operator-facing: mint a credential offer that advertises the
+ * `authorization_code` grant (no pre-authorized code, no pre-bound subject — the
+ * subject is established during the authorization step). The wallet consumes
+ * this offer + redirects the learner to the issuer's authorization_endpoint. */
+export function createAuthorizationCodeCredentialOffer(
+	issuerUrl: string,
+	input: { vct: string },
+): { credential_offer: { credential_issuer: string; credential_configuration_ids: string[]; grants: { authorization_code: { issuer_state: string } } }; issuer_state: string; expires_in: number } {
+	const issuerState = randomSecret();
+	return {
+		credential_offer: {
+			credential_issuer: issuerUrl,
+			credential_configuration_ids: [input.vct],
+			grants: { authorization_code: { issuer_state: issuerState } },
+		},
+		issuer_state: issuerState,
+		expires_in: Math.floor(OFFER_TTL_MS / 1000),
+	};
+}
+
+/** Credential request resolved from a successful authorization (auth-code
+ * flow). Mirrors the fields of a pre-authorized CredentialOffer so the
+ * credential endpoint can issue from either grant without branching. */
+export interface CredentialRequest {
+	subject: string;
+	vct: string;
+	claims: Record<string, unknown>;
+	selectivelyDisclosable: string[];
+	alg: SdJwtAlg;
+}
+
+/** Mint an access token (+ c_nonce) bound to a credential request resolved from
+ * the authorization-code flow. Reuses the shared `tokens` + `cNonces` stores so
+ * /credentials (which calls consumeAccessToken / getCNonceForToken) works
+ * unchanged. The credential request is wrapped as a synthetic CredentialOffer
+ * (preAuthorizedCode is unused — the code was already redeemed for this token). */
+export function mintAccessTokenForCredentialRequest(
+	req: CredentialRequest,
+): { access_token: string; token_type: "bearer"; expires_in: number; c_nonce: string; c_nonce_expires_in: number } {
+	const token = randomSecret();
+	const cNonce = randomSecret();
+	const offer: CredentialOffer = {
+		preAuthorizedCode: "", // not used in the auth-code path
+		subject: req.subject,
+		vct: req.vct,
+		claims: req.claims,
+		selectivelyDisclosable: req.selectivelyDisclosable,
+		alg: req.alg,
+		createdAt: Date.now(),
+		consumed: false,
+	};
+	tokens.set(token, { token, offer, createdAt: Date.now(), consumed: false });
+	cNonces.set(token, { nonce: cNonce, consumed: false, createdAt: Date.now() });
+	return { access_token: token, token_type: "bearer", expires_in: Math.floor(TOKEN_TTL_MS / 1000), c_nonce: cNonce, c_nonce_expires_in: Math.floor(TOKEN_TTL_MS / 1000) };
+}
+
 export function _resetOid4vciForTests(): void {
 	offers.clear();
 	tokens.clear();

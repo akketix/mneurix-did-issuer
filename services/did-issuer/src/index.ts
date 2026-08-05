@@ -14,11 +14,34 @@ import { putDid, getDid, setPublished } from "./store";
 import { loadOriginsFromEnv, originListFromUrls } from "./origins";
 import { resolveDid } from "./resolve";
 import { publishDid } from "./publish";
-import { randomUUID } from "node:crypto";
+import { randomUUID, randomBytes, createHmac, timingSafeEqual } from "node:crypto";
+/** A random URL-safe secret (for pending-state correlation). */
+function cryptoRandomSecret(): string {
+	return randomBytes(32).toString("base64url");
+}
+/** Verify an HS256 JWT (the lattice auth-result callback) + return its payload,
+ * or null if the signature is invalid / structure is wrong. Constant-time compare. */
+function verifyHs256Jwt(jwt: string, secret: string): Record<string, unknown> | null {
+	try {
+		const parts = jwt.split(".");
+		if (parts.length !== 3) return null;
+		const [h, p, s] = parts as [string, string, string];
+		const header = JSON.parse(Buffer.from(h.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { alg?: string };
+		if (header.alg !== "HS256") return null;
+		const signingInput = Buffer.from(h + "." + p, "ascii");
+		const sig = Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+		const expected = createHmac("sha256", secret).update(signingInput).digest();
+		if (sig.length !== expected.length || !timingSafeEqual(sig, expected)) return null;
+		return JSON.parse(Buffer.from(p.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as Record<string, unknown>;
+	} catch {
+		return null;
+	}
+}
 import { issueOb3 } from "./vc-issue";
 import { issueSdJwtVc, signIssuerJwt } from "./sdjwt";
 import { allocateOb3Status, allocateSdJwtStatus, getCredentialStatus, getEncodedStatusList } from "./status";
-import { createCredentialOffer, exchangePreAuthorizedCode, consumeAccessToken, getCNonceForToken, consumeCNonce, verifyProofAsync } from "./oid4vci";
+import { createCredentialOffer, createAuthorizationCodeCredentialOffer, exchangePreAuthorizedCode, consumeAccessToken, getCNonceForToken, consumeCNonce, verifyProofAsync, mintAccessTokenForCredentialRequest, type CredentialRequest } from "./oid4vci";
+import { issueAuthorizationCode, exchangeAuthorizationCode, storePendingAuthRequest, takePendingAuthRequest, consentPageHtml, verifyPkce } from "./oauth";
 import { createAuthorizationRequest, createSignedAuthorizationRequest, resolveSession, peekKbJwtNonce, consumeSession, getSessionByState, getRequestObject } from "./openid4vp";
 import { decryptResponse } from "./jwe";
 import { revokeKid } from "./revoked-kids";
@@ -79,6 +102,17 @@ if (!p256Key.x5c) {
 	persistP256Cert(process.env.MNEURIX_KEY_DIR, p256Key.x5c);
 }
 const ISSUER_NAME = process.env.MNEURIX_ISSUER_NAME ?? "Mneurix";
+// OID4VCI authorization-code flow (phase-2 Task 1): when
+// MNEURIX_LATTICE_AUTH_URL is set, /oauth/authorize delegates learner
+// authentication to the lattice's existing auth (the did-issuer stays
+// auth-delegated, not auth-hosting). When unset, the did-issuer shows its own
+// minimal consent page (the independently-deployable fallback; graceful degrade
+// when the lattice is unconfigured, per the architecture principle). Read lazily
+// per-request so tests can configure delegation mid-suite. The shared secret
+// signs the lattice's auth-result callback (HS256).
+const latticeAuthUrl = (): string => process.env.MNEURIX_LATTICE_AUTH_URL ?? "";
+const latticeAuthSharedSecret = (): string => process.env.MNEURIX_LATTICE_AUTH_SHARED_SECRET ?? "";
+const ISSUER_HOST = new URL(ISSUER_URL).host;
 const issuerDid = didFor(ISSUER_ORIGIN);
 function currentVerificationMethod(): string {
 	return `${issuerDid}#${issuerKey.kid}`;
@@ -435,9 +469,24 @@ v1.post("/credential-offers", async (c) => {
 		selectivelyDisclosable?: string[];
 		alg?: "EdDSA" | "ES256";
 		holderJwk?: Record<string, string>;
+		/** grantType: "pre-authorized_code" (default, operator-initiated, subject
+		 * pre-bound) or "authorization_code" (wallet-initiated, subject established
+		 * during the authorization step). */
+		grantType?: "pre-authorized_code" | "authorization_code";
 	} | null;
-	if (!body || !body.subjectId || !body.vct || !body.claims) {
-		return jsonError(c, 400, "BAD_REQUEST", "subjectId, vct, and claims are required");
+	if (!body || !body.vct) {
+		return jsonError(c, 400, "BAD_REQUEST", "vct is required");
+	}
+	// Authorization-code grant: advertise the authorization_code grant; the
+	// subject is NOT pre-bound (the wallet redirects the learner to
+	// /oauth/authorize, where the learner authenticates). claims/alg are
+	// resolved at the authorization step, not here.
+	if (body.grantType === "authorization_code") {
+		const result = createAuthorizationCodeCredentialOffer(ISSUER_URL, { vct: body.vct });
+		return c.json(result.credential_offer, 201);
+	}
+	if (!body.subjectId || !body.claims) {
+		return jsonError(c, 400, "BAD_REQUEST", "subjectId + claims are required for the pre-authorized_code grant");
 	}
 	const result = createCredentialOffer(ISSUER_URL, {
 		subject: body.subjectId,
@@ -520,7 +569,17 @@ app.get("/.well-known/oauth-authorization-server", (c) => {
 		authorization_endpoint: `${ISSUER_URL}/oauth/authorize`,
 		token_endpoint: `${ISSUER_URL}/oauth/token`,
 		token_endpoint_auth_methods_supported: ["none"],
-		grant_types_supported: ["urn:ietf:params:oauth:grant-type:pre-authorized_code"],
+		// Both OID4VCI grants are supported: the pre-authorized-code grant
+		// (operator-initiated) + the authorization-code grant (wallet-initiated,
+		// PKCE S256, per RFC 7636). Wallets that key on authorization_code (AltMe,
+		// Talao for SD-JWT VC) use the latter.
+		grant_types_supported: [
+			"urn:ietf:params:oauth:grant-type:pre-authorized_code",
+			"authorization_code",
+		],
+		response_types_supported: ["code"],
+		code_challenge_methods_supported: ["S256"],
+		response_mode_supported: ["query"],
 		"pre-authorized_grant_anonymous_access_supported": true,
 	});
 });
@@ -562,25 +621,197 @@ function credentialIssuerMetadata() {
 app.get("/.well-known/openid-credential-issuer", (c) => c.json(credentialIssuerMetadata()));
 app.get("/.well-known/oauth-credential-issuer", (c) => c.json(credentialIssuerMetadata()));
 
-// OID4VCI token endpoint: redeem a pre-authorized_code for an access token.
+// OID4VCI authorization endpoint (wallet-initiated, GET — the wallet opens
+// this in the learner's browser with a PKCE code_challenge + the credential
+// configuration requested). When MNEURIX_LATTICE_AUTH_URL is set, the did-issuer
+// DELEGATES learner authentication to the lattice (stores the pending request
+// + 302-redirects to the lattice's auth endpoint); the lattice authenticates the
+// learner + redirects back to /oauth/callback with a signed auth result. When
+// unset, the did-issuer shows its own minimal consent page (the fallback).
+function learnerSubject(learnerId: string): string {
+	return `did:web:${ISSUER_HOST}:learners:${learnerId}`;
+}
+function minimalClaims(learnerId: string, vct: string): { claims: Record<string, unknown>; selectivelyDisclosable: string[] } {
+	return { claims: { name: learnerId, achievement: vct, issuedAt: new Date().toISOString() }, selectivelyDisclosable: ["name", "achievement"] };
+}
+/** Strip the `#dc-sd-jwt` format-suffix alias from a credential_configuration_id
+ * to get the canonical vct (the credential endpoint returns the format matching
+ * the config id redeemed; the vct inside the SD-JWT VC is the canonical one). */
+function vctFromConfigId(configId: string): string {
+	return configId.replace(/#dc-sd-jwt$/, "");
+}
+app.get("/oauth/authorize", (c) => {
+	const credentialConfigurationId = c.req.query("credential_configuration_id");
+	const redirectUri = c.req.query("redirect_uri");
+	const state = c.req.query("state");
+	const codeChallenge = c.req.query("code_challenge");
+	const codeChallengeMethod = c.req.query("code_challenge_method");
+	const issuerState = c.req.query("issuer_state");
+	if (!credentialConfigurationId || !redirectUri || !state || !codeChallenge) {
+		return jsonError(c, 400, "INVALID_REQUEST", "credential_configuration_id, redirect_uri, state + code_challenge are required");
+	}
+	if (codeChallengeMethod !== "S256") {
+		return jsonError(c, 400, "INVALID_REQUEST", "code_challenge_method must be S256");
+	}
+	const req = {
+		credentialConfigurationId,
+		vct: vctFromConfigId(credentialConfigurationId),
+		redirectUri,
+		state,
+		codeChallenge,
+		codeChallengeMethod: "S256" as const,
+		...(issuerState ? { issuerState } : {}),
+	};
+	const lattice = latticeAuthUrl();
+	if (lattice) {
+		// Delegated path: store the pending request + redirect to the lattice.
+		// The lattice authenticates the learner + redirects back to /oauth/callback
+		// with pending_state + a signed auth_result (HS256 shared secret).
+		const pendingState = cryptoRandomSecret();
+		storePendingAuthRequest(pendingState, req);
+		const cb = `${ISSUER_URL}/oauth/callback`;
+		const dest = `${lattice}?callback=${encodeURIComponent(cb)}&pending_state=${encodeURIComponent(pendingState)}&state=${encodeURIComponent(state)}`;
+		return c.redirect(dest, 302);
+	}
+	// Self-hosted fallback: render the minimal consent page.
+	return c.html(consentPageHtml({
+		credentialConfigurationId,
+		redirectUri,
+		state,
+		codeChallenge,
+		...(issuerState ? { issuerState } : {}),
+		issuerName: ISSUER_NAME,
+	}), 200);
+});
+
+// OID4VCI consent submit (self-hosted fallback, POST form). The learner confirms
+// their identity on the consent page; the did-issuer issues a single-use
+// authorization code bound to (PKCE challenge + the learner subject + the
+// credential request) + 302-redirects the browser back to the wallet's
+// redirect_uri with ?code=...&state=... The wallet then redeems the code + its
+// PKCE verifier at /oauth/token.
+app.post("/oauth/consent", async (c) => {
+	const form = await c.req.parseBody().catch(() => null) as Record<string, string> | null;
+	const learnerId = typeof form?.learnerId === "string" ? form.learnerId.trim() : "";
+	const credentialConfigurationId = typeof form?.credential_configuration_id === "string" ? form.credential_configuration_id : "";
+	const redirectUri = typeof form?.redirect_uri === "string" ? form.redirect_uri : "";
+	const state = typeof form?.state === "string" ? form.state : "";
+	const codeChallenge = typeof form?.code_challenge === "string" ? form.code_challenge : "";
+	const issuerState = typeof form?.issuer_state === "string" ? form.issuer_state : undefined;
+	if (!learnerId || !credentialConfigurationId || !redirectUri || !state || !codeChallenge) {
+		return jsonError(c, 400, "INVALID_REQUEST", "learnerId, credential_configuration_id, redirect_uri, state + code_challenge are required");
+	}
+	const vct = vctFromConfigId(credentialConfigurationId);
+	const { claims, selectivelyDisclosable } = minimalClaims(learnerId, vct);
+	const issued = issueAuthorizationCode({
+		credentialConfigurationId,
+		vct,
+		redirectUri,
+		state,
+		codeChallenge,
+		codeChallengeMethod: "S256",
+		...(issuerState ? { issuerState } : {}),
+		subject: learnerSubject(learnerId),
+		claims,
+		selectivelyDisclosable,
+		alg: "EdDSA",
+	});
+	const dest = `${redirectUri}?code=${encodeURIComponent(issued.code)}&state=${encodeURIComponent(issued.state)}`;
+	return c.redirect(dest, 302);
+});
+
+// OID4VCI delegated-auth callback (the lattice redirects here after
+// authenticating the learner). Receives pending_state + a signed auth_result
+// (HS256 with MNEURIX_LATTICE_AUTH_SHARED_SECRET) carrying { learnerId, claims? }.
+// Verifies the signature, looks up the pending request, issues the auth code,
+// + 302-redirects to the wallet's redirect_uri. Fail-closed if delegation is
+// unconfigured or the signature is invalid. (The lattice side of this contract is
+// future work; the self-hosted fallback is the v1 deploy path.)
+app.get("/oauth/callback", async (c) => {
+	if (!latticeAuthUrl()) {
+		return jsonError(c, 400, "DELEGATION_UNCONFIGURED", "MNEURIX_LATTICE_AUTH_URL is not set; the delegated callback is not available");
+	}
+	const pendingState = c.req.query("pending_state");
+	const authResult = c.req.query("auth_result");
+	const state = c.req.query("state");
+	if (!pendingState || !authResult || !state) {
+		return jsonError(c, 400, "INVALID_REQUEST", "pending_state, auth_result + state are required");
+	}
+	const secret = latticeAuthSharedSecret();
+	if (!secret) {
+		return jsonError(c, 500, "DELEGATION_MISCONFIGURED", "MNEURIX_LATTICE_AUTH_SHARED_SECRET is not set; cannot verify the lattice auth result");
+	}
+	const parsed = verifyHs256Jwt(authResult, secret) as { learnerId?: string; claims?: Record<string, unknown> } | null;
+	if (!parsed || !parsed.learnerId) {
+		return jsonError(c, 401, "UNAUTHORIZED", "auth_result signature invalid or learnerId missing");
+	}
+	const pending = takePendingAuthRequest(pendingState);
+	if (!pending) {
+		return jsonError(c, 400, "INVALID_REQUEST", "pending request not found or expired");
+	}
+	const { claims, selectivelyDisclosable } = parsed.claims
+		? { claims: parsed.claims, selectivelyDisclosable: [] as string[] }
+		: minimalClaims(parsed.learnerId, pending.vct);
+	const issued = issueAuthorizationCode({
+		credentialConfigurationId: pending.credentialConfigurationId,
+		vct: pending.vct,
+		redirectUri: pending.redirectUri,
+		state,
+		codeChallenge: pending.codeChallenge,
+		codeChallengeMethod: "S256",
+		...(pending.issuerState ? { issuerState: pending.issuerState } : {}),
+		subject: learnerSubject(parsed.learnerId),
+		claims,
+		selectivelyDisclosable,
+		alg: "EdDSA",
+	});
+	const dest = `${pending.redirectUri}?code=${encodeURIComponent(issued.code)}&state=${encodeURIComponent(state)}`;
+	return c.redirect(dest, 302);
+});
+
+// OID4VCI token endpoint: redeem a pre-authorized_code OR an authorization_code
+// for an access token. Both grants share the /credentials endpoint downstream.
 app.post("/oauth/token", async (c) => {
 	// M-3 fix: accept form-encoded (RFC 6749 §4.1.1) OR JSON (wallets may use either).
 	let grantType: string | undefined;
-	let code: string | undefined;
+	let preAuthorizedCode: string | undefined;
+	let authCode: string | undefined;
+	let codeVerifier: string | undefined;
 	const ct = c.req.header("content-type") ?? "";
 	if (ct.includes("application/json")) {
-		const body = await c.req.json().catch(() => null) as { grant_type?: string; pre_authorized_code?: string } | null;
+		const body = await c.req.json().catch(() => null) as {
+			grant_type?: string; pre_authorized_code?: string; code?: string; code_verifier?: string;
+		} | null;
 		grantType = body?.grant_type;
-		code = body?.pre_authorized_code;
+		preAuthorizedCode = body?.pre_authorized_code;
+		authCode = body?.code;
+		codeVerifier = body?.code_verifier;
 	} else {
 		const form = await c.req.parseBody().catch(() => null) as Record<string, string | File> | null;
-		grantType = typeof form?.grant_type === "string" ? form.grant_type : undefined;
-		code = typeof form?.pre_authorized_code === "string" ? form.pre_authorized_code : undefined;
+		const f = (k: string): string | undefined => (typeof form?.[k] === "string" ? form[k] as string : undefined);
+		grantType = f("grant_type");
+		preAuthorizedCode = f("pre_authorized_code");
+		authCode = f("code");
+		codeVerifier = f("code_verifier");
 	}
-	if (grantType !== "urn:ietf:params:oauth:grant-type:pre-authorized_code" || !code) {
-		return jsonError(c, 400, "INVALID_REQUEST", "grant_type must be pre-authorized_code + pre_authorized_code required");
+	// Authorization-code grant (wallet-initiated, PKCE S256).
+	if (grantType === "authorization_code") {
+		if (!authCode || !codeVerifier) {
+			return jsonError(c, 400, "INVALID_REQUEST", "grant_type=authorization_code requires code + code_verifier");
+		}
+		const exchanged = exchangeAuthorizationCode(authCode, codeVerifier);
+		if (!exchanged.ok) {
+			const msg = exchanged.error === "invalid_pkce" ? "PKCE verification failed" : "invalid or expired authorization code";
+			return jsonError(c, 400, exchanged.error === "invalid_pkce" ? "INVALID_PKCE" : "INVALID_GRANT", msg);
+		}
+		const token = mintAccessTokenForCredentialRequest(exchanged.request);
+		return c.json(token, 200, { "Cache-Control": "no-store", "Pragma": "no-cache" });
 	}
-	const result = exchangePreAuthorizedCode(code);
+	// Pre-authorized-code grant (operator-initiated).
+	if (grantType !== "urn:ietf:params:oauth:grant-type:pre-authorized_code" || !preAuthorizedCode) {
+		return jsonError(c, 400, "INVALID_REQUEST", "grant_type must be authorization_code or pre-authorized_code");
+	}
+	const result = exchangePreAuthorizedCode(preAuthorizedCode);
 	if ("error" in result) return jsonError(c, 400, "INVALID_GRANT", result.error);
 	// M-3 fix: RFC 6749 §5.1 requires Cache-Control: no-store on token responses.
 	return c.json(result, 200, { "Cache-Control": "no-store", "Pragma": "no-cache" });
