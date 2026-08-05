@@ -557,6 +557,49 @@ v1.post("/dids/:did/publish", async (c) => {
 	return c.json({ did, publishedTo: result.publishedTo, quorum: result.quorum, confirmed: result.confirmed, docHash: result.docHash });
 });
 
+// Wallet-integration test helper (GET /qr): mints an authorization_code
+// credential offer server-side (no service token exposed to the browser) +
+// renders a QR encoding the `openid-credential-offer://` URI for a wallet
+// (AltMe, Talao) to scan. The wallet fetches the offer -> sees the
+// authorization_code grant -> redirects the learner to /oauth/authorize ->
+// consent -> code -> token -> credential. Intended for self-hosted wallet
+// testing; the QR image is rendered by a public QR service (no client-side JS).
+app.get("/qr", (c) => {
+	const offer = createAuthorizationCodeCredentialOffer(ISSUER_URL, { vct: DEFAULT_VCT });
+	const offerJson = JSON.stringify(offer.credential_offer);
+	const offerUri = `openid-credential-offer://?credential_offer=${encodeURIComponent(offerJson)}`;
+	const qrImg = `https://api.qrserver.com/v1/create-qr-code/?size=360x360&margin=0&data=${encodeURIComponent(offerUri)}`;
+	const esc = (s: string): string => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+	return c.html(`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(ISSUER_NAME)} — wallet test</title>
+<style>
+  body{font:15px/1.5 system-ui,sans-serif;max-width:520px;margin:32px auto;padding:0 16px;color:#0f172a;background:#f8fafc}
+  h1{font-size:18px;margin:0 0 6px}
+  .card{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:20px;text-align:center}
+  img{border:1px solid #e2e8f0;border-radius:8px;width:360px;height:360px}
+  .muted{color:#64748b;font-size:13px;margin:14px 0 0}
+  details{text-align:left;margin-top:16px;background:#f1f5f9;border-radius:8px;padding:10px}
+  summary{cursor:pointer;font-weight:600;font-size:13px}
+  code{display:block;word-break:break-all;font-size:11px;white-space:pre-wrap;margin-top:8px;color:#475569}
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>${esc(ISSUER_NAME)}</h1>
+    <p class="muted">Scan with a wallet (AltMe, Talao) to receive a verifiable credential via the OID4VCI authorization-code flow.</p>
+    <img src="${qrImg}" alt="credential offer QR">
+    <p class="muted">Issuer: <strong>${esc(ISSUER_URL)}</strong></p>
+    <details><summary>Raw credential offer URI</summary><code>${esc(offerUri)}</code></details>
+    <p class="muted">Refresh the page for a fresh offer. The flow: wallet fetches the offer -> /oauth/authorize -> consent -> code -> /oauth/token -> /credentials.</p>
+  </div>
+</body>
+</html>`, 200);
+});
+
 // OID4VCI: OAuth 2.0 Authorization Server metadata (RFC 8414) — the
 // pre-authorized-code grant + the token endpoint (wallet-facing, public).
 // `authorization_endpoint` is advertised (pointing at /oauth/authorize) so that
