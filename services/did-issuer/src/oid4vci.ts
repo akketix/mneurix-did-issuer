@@ -194,7 +194,13 @@ export async function verifyProofAsync(
 		const sig = Buffer.from(sigB64.replace(/-/g, "+").replace(/_/g, "/"), "base64");
 		if (header.alg === "ES256") {
 			const pub = createPublicKey({ key: holderJwk, format: "jwk" });
-			const valid = verify("SHA256", signingInput, { key: pub, dsaEncoding: "ieee-p1363" }, sig);
+			// JOSE ES256 uses raw r||s (ieee-p1363) per RFC 7518. Some wallet libs emit
+			// DER-encoded ECDSA signatures — try raw first, then DER as a fallback.
+			let valid = verify("SHA256", signingInput, { key: pub, dsaEncoding: "ieee-p1363" }, sig);
+			if (!valid) {
+				try { valid = verify("SHA256", signingInput, { key: pub }, sig); } catch { /* sig not DER-shaped */ }
+			}
+			console.log(`verifyProof ES256: sigLen=${sig.length} rawOrDerValid=${valid}`);
 			return { valid, holderJwk };
 		} else if (header.alg === "EdDSA") {
 			const { verifyAsync } = await import("@noble/ed25519");
