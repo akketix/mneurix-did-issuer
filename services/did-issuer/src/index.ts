@@ -684,14 +684,19 @@ function vctFromConfigId(configId: string): string {
 	return configId.replace(/#dc-sd-jwt$/, "");
 }
 app.get("/oauth/authorize", (c) => {
-	const credentialConfigurationId = c.req.query("credential_configuration_id");
+	// OID4VCI auth-code: the credential-config-id query param name varies across
+	// wallet implementations + spec drafts. Accept both `credential_config_id`
+	// (current draft-14+ term — AltMe/EUDI/walt.id) and `credential_configuration_id`
+	// (earlier drafts). On a missing-param failure, echo the received query keys so
+	// any further wallet-specific mismatch is self-diagnosing.
+	const credentialConfigurationId = c.req.query("credential_config_id") ?? c.req.query("credential_configuration_id");
 	const redirectUri = c.req.query("redirect_uri");
 	const state = c.req.query("state");
 	const codeChallenge = c.req.query("code_challenge");
 	const codeChallengeMethod = c.req.query("code_challenge_method");
 	const issuerState = c.req.query("issuer_state");
 	if (!credentialConfigurationId || !redirectUri || !state || !codeChallenge) {
-		return jsonError(c, 400, "INVALID_REQUEST", "credential_configuration_id, redirect_uri, state + code_challenge are required");
+		return jsonError(c, 400, "INVALID_REQUEST", "credential_config_id (or credential_configuration_id), redirect_uri, state + code_challenge are required", { received_query_keys: Object.keys(c.req.queries()) });
 	}
 	if (codeChallengeMethod !== "S256") {
 		return jsonError(c, 400, "INVALID_REQUEST", "code_challenge_method must be S256");
