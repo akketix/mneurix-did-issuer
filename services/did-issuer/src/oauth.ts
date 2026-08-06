@@ -33,6 +33,10 @@ export interface AuthorizationRequestInput {
 	codeChallengeMethod: "S256";
 	/** issuer_state from the credential offer (optional correlation). */
 	issuerState?: string;
+	/** The wallet-supplied nonce from the authorize request (OID4VCI auth-code):
+	 * the issuer returns it as c_nonce at the token endpoint + the wallet's proof
+	 * uses it. Optional (some wallets let the issuer mint the c_nonce). */
+	walletNonce?: string;
 }
 interface AuthorizationRequest extends AuthorizationRequestInput {
 	createdAt: number;
@@ -118,7 +122,7 @@ export function issueAuthorizationCode(input: IssueAuthCodeInput): { code: strin
 export function exchangeAuthorizationCode(
 	code: string,
 	codeVerifier: string,
-): { ok: true; request: CredentialRequest } | { ok: false; error: "invalid_grant" | "invalid_pkce" } {
+): { ok: true; request: CredentialRequest; walletNonce?: string } | { ok: false; error: "invalid_grant" | "invalid_pkce" } {
 	const entry = authCodes.get(code);
 	if (!entry || entry.consumed) return { ok: false, error: "invalid_grant" };
 	if (Date.now() - entry.createdAt > CODE_TTL_MS) {
@@ -141,6 +145,7 @@ export function exchangeAuthorizationCode(
 			selectivelyDisclosable: entry.selectivelyDisclosable,
 			alg: entry.alg,
 		},
+		...(entry.walletNonce ? { walletNonce: entry.walletNonce } : {}),
 	};
 }
 
@@ -155,6 +160,7 @@ export function consentPageHtml(opts: {
 	state: string;
 	codeChallenge: string;
 	issuerState?: string;
+	walletNonce?: string;
 	issuerName: string;
 	defaultLearnerId?: string;
 }): string {
@@ -166,7 +172,8 @@ export function consentPageHtml(opts: {
       <input type="hidden" name="state" value="${esc(opts.state)}">
       <input type="hidden" name="code_challenge" value="${esc(opts.codeChallenge)}">
       <input type="hidden" name="code_challenge_method" value="S256">
-      ${opts.issuerState ? `<input type="hidden" name="issuer_state" value="${esc(opts.issuerState)}">` : ""}`;
+      ${opts.issuerState ? `<input type="hidden" name="issuer_state" value="${esc(opts.issuerState)}">` : ""}
+      ${opts.walletNonce ? `<input type="hidden" name="nonce" value="${esc(opts.walletNonce)}">` : ""}`;
 	return `<!doctype html>
 <html lang="en">
 <head>

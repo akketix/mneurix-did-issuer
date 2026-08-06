@@ -291,12 +291,15 @@ export interface CredentialRequest {
  * the authorization-code flow. Reuses the shared `tokens` + `cNonces` stores so
  * /credentials (which calls consumeAccessToken / getCNonceForToken) works
  * unchanged. The credential request is wrapped as a synthetic CredentialOffer
- * (preAuthorizedCode is unused — the code was already redeemed for this token). */
+ * (preAuthorizedCode is unused — the code was already redeemed for this token).
+ * `cNonce` (optional) is the wallet-supplied nonce from the authorize request —
+ * when provided it is returned as the c_nonce (the wallet's proof uses it). */
 export function mintAccessTokenForCredentialRequest(
 	req: CredentialRequest,
+	cNonce?: string,
 ): { access_token: string; token_type: "bearer"; expires_in: number; c_nonce: string; c_nonce_expires_in: number } {
 	const token = randomSecret();
-	const cNonce = randomSecret();
+	const nonce = cNonce ?? randomSecret();
 	const offer: CredentialOffer = {
 		preAuthorizedCode: "", // not used in the auth-code path
 		subject: req.subject,
@@ -308,8 +311,8 @@ export function mintAccessTokenForCredentialRequest(
 		consumed: false,
 	};
 	tokens.set(token, { token, offer, createdAt: Date.now(), consumed: false });
-	cNonces.set(token, { nonce: cNonce, consumed: false, createdAt: Date.now() });
-	return { access_token: token, token_type: "bearer", expires_in: Math.floor(TOKEN_TTL_MS / 1000), c_nonce: cNonce, c_nonce_expires_in: Math.floor(TOKEN_TTL_MS / 1000) };
+	cNonces.set(token, { nonce, consumed: false, createdAt: Date.now() });
+	return { access_token: token, token_type: "bearer", expires_in: Math.floor(TOKEN_TTL_MS / 1000), c_nonce: nonce, c_nonce_expires_in: Math.floor(TOKEN_TTL_MS / 1000) };
 }
 
 export function _resetOid4vciForTests(): void {

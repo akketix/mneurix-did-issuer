@@ -699,6 +699,7 @@ app.get("/oauth/authorize", (c) => {
 	const codeChallenge = c.req.query("code_challenge");
 	const codeChallengeMethod = c.req.query("code_challenge_method");
 	const responseType = c.req.query("response_type");
+	const walletNonce = c.req.query("nonce");
 	if (responseType && responseType !== "code") {
 		return jsonError(c, 400, "INVALID_REQUEST", "response_type must be 'code'", { received: responseType });
 	}
@@ -730,6 +731,7 @@ app.get("/oauth/authorize", (c) => {
 		codeChallenge,
 		codeChallengeMethod: "S256" as const,
 		...(issuerState ? { issuerState } : {}),
+		...(walletNonce ? { walletNonce } : {}),
 	};
 	const lattice = latticeAuthUrl();
 	if (lattice) {
@@ -749,6 +751,7 @@ app.get("/oauth/authorize", (c) => {
 		state,
 		codeChallenge,
 		...(issuerState ? { issuerState } : {}),
+		...(walletNonce ? { walletNonce } : {}),
 		issuerName: ISSUER_NAME,
 	}), 200);
 });
@@ -767,6 +770,7 @@ app.post("/oauth/consent", async (c) => {
 	const state = typeof form?.state === "string" ? form.state : "";
 	const codeChallenge = typeof form?.code_challenge === "string" ? form.code_challenge : "";
 	const issuerState = typeof form?.issuer_state === "string" ? form.issuer_state : undefined;
+	const walletNonce = typeof form?.nonce === "string" ? form.nonce : undefined;
 	if (!learnerId || !credentialConfigurationId || !redirectUri || !state || !codeChallenge) {
 		return jsonError(c, 400, "INVALID_REQUEST", "learnerId, credential_configuration_id, redirect_uri, state + code_challenge are required", { received_form_keys: form ? Object.keys(form) : [] });
 	}
@@ -780,6 +784,7 @@ app.post("/oauth/consent", async (c) => {
 		codeChallenge,
 		codeChallengeMethod: "S256",
 		...(issuerState ? { issuerState } : {}),
+		...(walletNonce ? { walletNonce } : {}),
 		subject: learnerSubject(learnerId),
 		claims,
 		selectivelyDisclosable,
@@ -829,6 +834,7 @@ app.get("/oauth/callback", async (c) => {
 		codeChallenge: pending.codeChallenge,
 		codeChallengeMethod: "S256",
 		...(pending.issuerState ? { issuerState: pending.issuerState } : {}),
+		...(pending.walletNonce ? { walletNonce: pending.walletNonce } : {}),
 		subject: learnerSubject(parsed.learnerId),
 		claims,
 		selectivelyDisclosable,
@@ -873,7 +879,7 @@ app.post("/oauth/token", async (c) => {
 			const msg = exchanged.error === "invalid_pkce" ? "PKCE verification failed" : "invalid or expired authorization code";
 			return jsonError(c, 400, exchanged.error === "invalid_pkce" ? "INVALID_PKCE" : "INVALID_GRANT", msg);
 		}
-		const token = mintAccessTokenForCredentialRequest(exchanged.request);
+		const token = mintAccessTokenForCredentialRequest(exchanged.request, exchanged.walletNonce);
 		return c.json(token, 200, { "Cache-Control": "no-store", "Pragma": "no-cache" });
 	}
 	// Pre-authorized-code grant (operator-initiated).
@@ -896,7 +902,7 @@ app.post("/credentials", async (c) => {
 	const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
 	if (!token) return jsonError(c, 401, "UNAUTHORIZED", "missing Bearer access token");
 	const offer = consumeAccessToken(token);
-	if (!offer) return jsonError(c, 401, "UNAUTHORIZED", "invalid or expired access token");
+	if (!offer) { console.log("credentials 401: access token not resolved"); return jsonError(c, 401, "UNAUTHORIZED", "invalid or expired access token"); }
 
 	// M-2 fix: OID4VCI proof-of-possession. The wallet sends a proof JWT
 	// (signed by its holder key, containing the c_nonce from the token response).
@@ -912,6 +918,17 @@ app.post("/credentials", async (c) => {
 		}
 		const proofResult = await verifyProofAsync(proofJwt, cNonce);
 		if (!proofResult.valid || !proofResult.holderJwk) {
+			// Diagnostic: log the expected vs proof nonce + the proof alg so a wallet
+			// mismatch (nonce binding vs signature) is visible in the RUN logs.
+			let proofNonce: string | undefined;
+			let proofAlg: string | undefined;
+			try {
+				const parts = proofJwt.split(".");
+				const h = JSON.parse(Buffer.from(parts[0]!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { alg?: string };
+				const p = JSON.parse(Buffer.from(parts[1]!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { nonce?: string };
+				proofAlg = h.alg; proofNonce = p.nonce;
+			} catch { /* malformed proof */ }
+			console.log(`credentials 401 proof-fail: expectedNonce=${cNonce?.slice(0, 10)} proofNonce=${proofNonce?.slice(0, 10)} proofAlg=${proofAlg}`);
 			return jsonError(c, 401, "UNAUTHORIZED", "proof verification failed: invalid signature or nonce mismatch");
 		}
 		consumeCNonce(token); // single-use nonce
