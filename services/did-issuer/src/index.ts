@@ -768,7 +768,7 @@ app.post("/oauth/consent", async (c) => {
 	const codeChallenge = typeof form?.code_challenge === "string" ? form.code_challenge : "";
 	const issuerState = typeof form?.issuer_state === "string" ? form.issuer_state : undefined;
 	if (!learnerId || !credentialConfigurationId || !redirectUri || !state || !codeChallenge) {
-		return jsonError(c, 400, "INVALID_REQUEST", "learnerId, credential_configuration_id, redirect_uri, state + code_challenge are required");
+		return jsonError(c, 400, "INVALID_REQUEST", "learnerId, credential_configuration_id, redirect_uri, state + code_challenge are required", { received_form_keys: form ? Object.keys(form) : [] });
 	}
 	const vct = vctFromConfigId(credentialConfigurationId);
 	const { claims, selectivelyDisclosable } = minimalClaims(learnerId, vct);

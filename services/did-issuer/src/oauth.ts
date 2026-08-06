@@ -189,11 +189,11 @@ export function consentPageHtml(opts: {
   <div class="card">
     <h1>${esc(opts.issuerName)}</h1>
     <p class="muted">A wallet is requesting a verifiable credential. Confirm your identity to issue it.</p>
-    <label for="learnerId">Your learner ID</label>
-    <input id="learnerId" name="learnerId" type="text" value="${esc(opts.defaultLearnerId ?? "")}" placeholder="learner-123" required>
     <label>Requested credential</label>
     <div class="req">${esc(opts.credentialConfigurationId)}</div>
     <form method="POST" action="/oauth/consent" autocomplete="off">${fields}
+      <label for="learnerId">Your learner ID</label>
+      <input id="learnerId" name="learnerId" type="text" value="${esc(opts.defaultLearnerId ?? "")}" placeholder="learner-123" required>
       <button type="submit">Approve &amp; issue</button>
     </form>
     <p class="muted" style="margin-top:16px">By approving, ${esc(opts.issuerName)} issues a verifiable credential to the wallet that initiated this request. The credential is bound to your holder key (the wallet proves possession); it is not stored by the issuer.</p>
