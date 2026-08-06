@@ -326,6 +326,49 @@ test("1.6 OID4VCI auth-code: wallet-supplied nonce returns as c_nonce (AltMe pro
 	assert.equal(cred.status, 200);
 });
 
+test("1.6 OID4VCI auth-code: did:jwk holder proof (AltMe style — key in kid/iss, not header.jwk)", async () => {
+	const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+	const pubJwk = publicKey.export({ format: "jwk" }) as Record<string, string>;
+	const didJwk = "did:jwk:" + Buffer.from(JSON.stringify({ kty: pubJwk.kty, crv: pubJwk.crv, x: pubJwk.x, y: pubJwk.y })).toString("base64url");
+	const signProofDidJwk = (nonce: string) => {
+		const header = b64url(JSON.stringify({ alg: "ES256", typ: "openid4vci-proof+jwt", kid: didJwk + "#0" }));
+		const payload = b64url(JSON.stringify({ nonce, iss: didJwk, aud: ISSUER_URL }));
+		const signingInput = Buffer.from(header + "." + payload, "ascii");
+		const sig = createSign("SHA256").update(signingInput).sign({ key: privateKey.export({ format: "pem", type: "pkcs8" }), dsaEncoding: "ieee-p1363" });
+		return header + "." + payload + "." + b64url(sig);
+	};
+	const offer = await mintAuthCodeOffer();
+	const issuerState = offer.grants.authorization_code.issuer_state;
+	const pkce = pkcePair();
+	const redirectUri = "https://wallet.example/callback";
+	const state = "dj-state";
+	const walletNonce = "dj-nonce-xyz";
+	const authorize = await app.request(
+		`/oauth/authorize?issuer_state=${encodeURIComponent(issuerState)}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}&code_challenge=${pkce.challenge}&code_challenge_method=S256&response_type=code&nonce=${encodeURIComponent(walletNonce)}`,
+		{ method: "GET" },
+	);
+	assert.equal(authorize.status, 200);
+	const consentForm = new URLSearchParams({
+		learnerId: "learner-123", credential_configuration_id: VCT,
+		redirect_uri: redirectUri, state, code_challenge: pkce.challenge, code_challenge_method: "S256", nonce: walletNonce,
+	});
+	const consent = await app.request("/oauth/consent", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: consentForm.toString(), redirect: "manual" });
+	assert.equal(consent.status, 302);
+	const code = codeFromLocation(consent.headers.get("location")!);
+	const tok = await app.request("/oauth/token", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ grant_type: "authorization_code", code, code_verifier: pkce.verifier }) });
+	assert.equal(tok.status, 200);
+	const tokBody = (await tok.json()) as { access_token: string; c_nonce: string };
+	assert.equal(tokBody.c_nonce, walletNonce);
+	// did:jwk proof — no header.jwk; the key is in kid/iss as a did:jwk DID
+	const cred = await app.request("/credentials", { method: "POST", headers: { authorization: `Bearer ${tokBody.access_token}`, "content-type": "application/json" }, body: JSON.stringify({ proof: { jwt: signProofDidJwk(tokBody.c_nonce), proof_type: "jwt" } }) });
+	const credText = await cred.text();
+	assert.equal(cred.status, 200, `did:jwk proof credential fetch (got ${credText.slice(0, 200)})`);
+	const credBody = JSON.parse(credText) as { credential: string };
+	assert.ok(credBody.credential.includes("~"), "SD-JWT VC issued via the did:jwk proof path");
+	const sdjwtPayload = JSON.parse(b64urlDecode(credBody.credential.split("~")[0]!.split(".")[1]!).toString("utf8")) as { sub?: string };
+	assert.equal(sdjwtPayload.sub, didJwk, "credential sub is the wallet's did:jwk holder DID");
+});
+
 // --- Delegated path (lattice auth-result callback contract) ---
 const SHARED_SECRET = "test-lattice-shared-secret";
 let savedLatticeUrl: string | undefined;

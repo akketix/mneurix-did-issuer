@@ -56,6 +56,11 @@ export interface SdJwtIssueInput {
 	status?: { status_list: { uri: string; idx: number; bits?: number } };
 	/** Issuer verification method (kid header), e.g. did:web:<origin>#<kid>. */
 	verificationMethod: string;
+	/** SD-JWT VC header `typ`. Must match the format the wallet requested: "vc+sd-jwt"
+	 * (the current spec term — what most wallets key on) or "dc+sd-jwt" (the older
+	 * draft term). Defaults to "dc+sd-jwt" for back-compat; set to "vc+sd-jwt" when
+	 * the wallet redeemed a `vc+sd-jwt` credential configuration. */
+	typ?: string;
 	/** Issued-at (seconds). Defaults to now. */
 	iat?: number;
 }
@@ -144,9 +149,10 @@ export async function issueSdJwtVc(input: SdJwtIssueInput, keys: KeyMaterial, p2
 	if (input.status) payload.status = input.status;
 
 	const headerKid = input.verificationMethod.includes("#") ? input.verificationMethod.slice(input.verificationMethod.lastIndexOf("#") + 1) : input.verificationMethod;
+	const sdTyp = input.typ ?? "dc+sd-jwt";
 	const header = alg === "ES256"
-		? { alg: "ES256", typ: "dc+sd-jwt", kid: p256Key!.kid, ...(p256Key!.x5c ? { x5c: p256Key!.x5c } : {}) }
-		: { alg: "EdDSA", typ: "dc+sd-jwt", kid: headerKid };
+		? { alg: "ES256", typ: sdTyp, kid: p256Key!.kid, ...(p256Key!.x5c ? { x5c: p256Key!.x5c } : {}) }
+		: { alg: "EdDSA", typ: sdTyp, kid: headerKid };
 	const headerB64 = b64url(JSON.stringify(header));
 	const payloadB64 = b64url(JSON.stringify(payload));
 	const signingInput = Buffer.from(`${headerB64}.${payloadB64}`, "ascii");

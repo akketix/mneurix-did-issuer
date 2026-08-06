@@ -647,7 +647,7 @@ app.get("/.well-known/oauth-authorization-server", (c) => {
 function credentialIssuerMetadata() {
 	const base = {
 		scope: "MneurixAchievement",
-		cryptographic_binding_methods_supported: ["did:web", "jwk"],
+		cryptographic_binding_methods_supported: ["did:web", "did:jwk", "jwk"],
 		credential_signing_alg_values_supported: ["EdDSA", "ES256"],
 		vct: DEFAULT_VCT,
 	};
@@ -909,6 +909,7 @@ app.post("/credentials", async (c) => {
 	// The issuer verifies the proof + extracts the holder key from it.
 	const cNonce = getCNonceForToken(token);
 	let holderJwk: Record<string, string> | undefined = offer.holderJwk;
+	let holderDid: string | undefined;
 	if (cNonce) {
 		// A c_nonce was issued — the wallet MUST send a proof.
 		const body = await c.req.json().catch(() => null) as { proof?: { jwt?: string; proof_type?: string } } | null;
@@ -939,6 +940,7 @@ app.post("/credentials", async (c) => {
 		}
 		consumeCNonce(token); // single-use nonce
 		holderJwk = proofResult.holderJwk; // use the wallet's key, not the operator's
+		holderDid = proofResult.holderDid; // the wallet's holder DID (did:jwk) — used as the credential sub
 	}
 
 	const oidcStatusListId = offer.alg === "ES256" ? `${ISSUER_URL}/statuslists/revocation/1?alg=ES256` : `${ISSUER_URL}/statuslists/revocation/1`;
@@ -948,7 +950,7 @@ app.post("/credentials", async (c) => {
 	try {
 		result = await issueSdJwtVc({
 			iss,
-			sub: offer.subject,
+			sub: holderDid ?? offer.subject,
 			vct: offer.vct,
 			claims: offer.claims,
 			selectivelyDisclosable: offer.selectivelyDisclosable,
@@ -956,6 +958,10 @@ app.post("/credentials", async (c) => {
 			status,
 			verificationMethod: currentVerificationMethod(),
 			alg: offer.alg,
+			// SD-JWT VC header typ must match the format the wallet requested (vc+sd-jwt
+			// for the primary config, dc+sd-jwt for the #dc-sd-jwt config) — strict
+			// wallet parsers reject a typ/format mismatch.
+			typ: offer.vct.endsWith("#dc-sd-jwt") ? "dc+sd-jwt" : "vc+sd-jwt",
 		}, issuerKey, p256Key);
 	} catch (e) {
 		return jsonError(c, 502, "ISSUER_ERROR", `cannot issue credential: ${(e as Error).message}`);

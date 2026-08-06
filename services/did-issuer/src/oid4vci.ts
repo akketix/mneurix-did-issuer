@@ -48,6 +48,22 @@ function randomSecret(): string {
 	return b64url(randomBytes(32));
 }
 
+/** Decode a `did:jwk:` DID into its JWK. The did:jwk method encodes the public key
+ * as base64url(JSON.stringify(jwk)) in the DID path (optionally with a `#vm`
+ * fragment). Returns null if the DID isn't a did:jwk or the payload isn't a JWK.
+ * Used by verifyProofAsync — AltMe/walt.id sign the OID4VCI proof with a did:jwk
+ * holder key (no embedded header.jwk / cnf.jwk). */
+export function didJwkToJwk(did: string | undefined): Record<string, string> | null {
+	if (!did || !did.startsWith("did:jwk:")) return null;
+	const b64 = did.slice("did:jwk:".length).split("#")[0]!;
+	try {
+		const jwk = JSON.parse(Buffer.from(b64, "base64url").toString("utf8")) as Record<string, string>;
+		return jwk.kty ? jwk : null;
+	} catch {
+		return null;
+	}
+}
+
 export interface CreateOfferInput {
 	subject: string;
 	vct: string;
@@ -179,16 +195,25 @@ export function verifyProof(
 export async function verifyProofAsync(
 	proofJwt: string,
 	expectedNonce: string,
-): Promise<{ valid: boolean; holderJwk?: Record<string, string> }> {
+): Promise<{ valid: boolean; holderJwk?: Record<string, string>; holderDid?: string }> {
 	try {
 		const parts = proofJwt.split(".");
 		if (parts.length !== 3) return { valid: false };
 		const [h, p, sigB64] = parts as [string, string, string];
-		const header = JSON.parse(Buffer.from(h.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { alg?: string; jwk?: Record<string, string> };
+		const header = JSON.parse(Buffer.from(h.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { alg?: string; jwk?: Record<string, string>; kid?: string };
 		const payload = JSON.parse(Buffer.from(p.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { nonce?: string; iss?: string; aud?: string; cnf?: { jwk?: Record<string, string> } };
 		if (payload.nonce !== expectedNonce) return { valid: false };
-		const holderJwk = header.jwk ?? payload.cnf?.jwk;
+		// Holder key extraction. OID4VCI wallets place the holder public key in one of:
+		//   1. header.jwk (classic jwt proof type)
+		//   2. payload.cnf.jwk (the CNF claim)
+		//   3. a `did:jwk:` DID in header.kid / payload.iss — the did:jwk method encodes
+		//      the JWK as base64url(JSON) in the DID itself (AltMe/walt.id do this).
+		const holderJwk = header.jwk ?? payload.cnf?.jwk ?? didJwkToJwk(header.kid) ?? didJwkToJwk(payload.iss);
 		if (!holderJwk || !holderJwk.kty) return { valid: false };
+		// Holder DID: the wallet's holder identifier (the did:jwk from the proof's
+		// iss/kid). Used as the credential `sub` so the issued VC's subject is the
+		// wallet's holder key (holder binding), not an issuer-invented did:web.
+		const holderDid = (typeof payload.iss === "string" && payload.iss.startsWith("did:jwk:")) ? payload.iss : (typeof header.kid === "string" && header.kid.startsWith("did:jwk:") ? header.kid.split("#")[0]! : undefined);
 		const { createPublicKey, verify } = await import("node:crypto");
 		const signingInput = Buffer.from(h + "." + p, "ascii");
 		const sig = Buffer.from(sigB64.replace(/-/g, "+").replace(/_/g, "/"), "base64");
@@ -201,7 +226,7 @@ export async function verifyProofAsync(
 				try { valid = verify("SHA256", signingInput, { key: pub }, sig); } catch { /* sig not DER-shaped */ }
 			}
 			console.log(`verifyProof ES256: sigLen=${sig.length} rawOrDerValid=${valid}`);
-			return { valid, holderJwk };
+			return { valid, holderJwk, ...(holderDid ? { holderDid } : {}) };
 		} else if (header.alg === "EdDSA") {
 			const { verifyAsync } = await import("@noble/ed25519");
 			const pub = createPublicKey({ key: holderJwk, format: "jwk" });
@@ -209,7 +234,7 @@ export async function verifyProofAsync(
 			// noble needs the raw 32-byte public key — extract from the JWK x
 			const pubRaw = Buffer.from(holderJwk.x!, "base64url");
 			const valid = await verifyAsync(new Uint8Array(sig), signingInput, new Uint8Array(pubRaw));
-			return { valid, holderJwk };
+			return { valid, holderJwk, ...(holderDid ? { holderDid } : {}) };
 		}
 		return { valid: false };
 	} catch {
