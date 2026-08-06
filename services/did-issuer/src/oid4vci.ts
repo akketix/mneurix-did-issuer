@@ -240,11 +240,31 @@ export function consumeCNonce(token: string): void {
  * `authorization_code` grant (no pre-authorized code, no pre-bound subject — the
  * subject is established during the authorization step). The wallet consumes
  * this offer + redirects the learner to the issuer's authorization_endpoint. */
+// issuer_state store: correlates a credential offer's authorization_code
+// grant issuer_state to the vct being requested, so /oauth/authorize can recover
+// the credential config when the wallet sends issuer_state (AltMe/EUDI) instead
+// of an explicit credential_config_id query param.
+const issuerStateStore = new Map<string, { vct: string; createdAt: number }>();
+const ISSUER_STATE_TTL_MS = 10 * 60 * 1000;
+
+/** Look up the vct bound to a credential offer's issuer_state (single-use-ish,
+ * TTL-bounded). Returns null if unknown/expired. */
+export function lookupIssuerState(issuerState: string): { vct: string } | null {
+	const e = issuerStateStore.get(issuerState);
+	if (!e) return null;
+	if (Date.now() - e.createdAt > ISSUER_STATE_TTL_MS) {
+		issuerStateStore.delete(issuerState);
+		return null;
+	}
+	return { vct: e.vct };
+}
+
 export function createAuthorizationCodeCredentialOffer(
 	issuerUrl: string,
 	input: { vct: string },
 ): { credential_offer: { credential_issuer: string; credential_configuration_ids: string[]; grants: { authorization_code: { issuer_state: string } } }; issuer_state: string; expires_in: number } {
 	const issuerState = randomSecret();
+	issuerStateStore.set(issuerState, { vct: input.vct, createdAt: Date.now() });
 	return {
 		credential_offer: {
 			credential_issuer: issuerUrl,
@@ -296,4 +316,5 @@ export function _resetOid4vciForTests(): void {
 	offers.clear();
 	tokens.clear();
 	cNonces.clear();
+	issuerStateStore.clear();
 }

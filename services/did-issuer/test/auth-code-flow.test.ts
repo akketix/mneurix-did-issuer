@@ -243,6 +243,49 @@ test("1.6 OID4VCI auth-code: pre-authorized-code flow unchanged (no regression)"
 	assert.equal(cred.status, 200);
 });
 
+test("1.6 OID4VCI auth-code: wallet sends issuer_state (no credential_config_id) — AltMe style", async () => {
+	const offer = await mintAuthCodeOffer();
+	const issuerState = offer.grants.authorization_code.issuer_state;
+	assert.ok(issuerState, "offer carries an issuer_state");
+	const pkce = pkcePair();
+	const redirectUri = "https://wallet.example/callback";
+	const state = "is-state";
+	// authorize with issuer_state only (no credential_config_id) -> consent page renders
+	const authorize = await app.request(
+		`/oauth/authorize?issuer_state=${encodeURIComponent(issuerState)}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}&code_challenge=${pkce.challenge}&code_challenge_method=S256&response_type=code`,
+		{ method: "GET" },
+	);
+	assert.equal(authorize.status, 200);
+	assert.match(await authorize.text(), /Approve/);
+	// consent -> code (the consent form carries the resolved vct as credential_configuration_id)
+	const consentForm = new URLSearchParams({
+		learnerId: "learner-is", credential_configuration_id: VCT,
+		redirect_uri: redirectUri, state, code_challenge: pkce.challenge, code_challenge_method: "S256",
+	});
+	const consent = await app.request("/oauth/consent", {
+		method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
+		body: consentForm.toString(), redirect: "manual",
+	});
+	assert.equal(consent.status, 302);
+	const code = codeFromLocation(consent.headers.get("location")!);
+	// token -> credential
+	const tok = await app.request("/oauth/token", {
+		method: "POST", headers: { "content-type": "application/json" },
+		body: JSON.stringify({ grant_type: "authorization_code", code, code_verifier: pkce.verifier }),
+	});
+	assert.equal(tok.status, 200);
+	const tokBody = (await tok.json()) as { access_token: string; c_nonce: string };
+	const holder = holderKeypairES256();
+	const cred = await app.request("/credentials", {
+		method: "POST",
+		headers: { authorization: `Bearer ${tokBody.access_token}`, "content-type": "application/json" },
+		body: JSON.stringify({ proof: { jwt: holder.signProof(tokBody.c_nonce), proof_type: "jwt" } }),
+	});
+	assert.equal(cred.status, 200);
+	const credBody = (await cred.json()) as { credential: string };
+	assert.ok(credBody.credential.includes("~"), "SD-JWT VC issued via the issuer_state path");
+});
+
 // --- Delegated path (lattice auth-result callback contract) ---
 const SHARED_SECRET = "test-lattice-shared-secret";
 let savedLatticeUrl: string | undefined;
