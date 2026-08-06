@@ -22,9 +22,11 @@
 		"test": "tsx test/smoke.test.ts && tsx packages/sdk/test/sdk.test.ts && tsx services/did-issuer/test/did.test.ts && tsx services/did-issuer/test/resolve.test.ts && tsx services/did-issuer/test/vc-issue.test.ts && tsx services/did-issuer/test/rotate.test.ts && tsx services/did-issuer/test/verify.test.ts && tsx services/did-issuer/test/crypto-edge.test.ts && tsx services/did-issuer/test/store-persistence.test.ts && tsx packages/licensing/test/license.test.ts && tsx services/did-issuer/test/issuer-metadata-statuslist.test.ts && tsx services/did-issuer/test/sdjwt-ietf-status.test.ts && tsx services/did-issuer/test/hybrid-keys.test.ts && tsx services/did-issuer/test/sdjwt-es256.test.ts && tsx services/did-issuer/test/oid4vci.test.ts && tsx services/did-issuer/test/auth-code-flow.test.ts && tsx services/did-issuer/test/openid4vp-request.test.ts && tsx services/did-issuer/test/openid4vp-response.test.ts && tsx services/did-issuer/test/openid4vp-response-es256.test.ts && tsx services/did-issuer/test/openid4vp-es256-holder.test.ts && tsx services/did-issuer/test/openid4vp-encrypted-response.test.ts && tsx services/did-issuer/test/issuer-x5c.test.ts && tsx services/did-issuer/test/openid4vp-dc-api.test.ts && tsx services/did-issuer/test/openid4vp-jarm.test.ts && tsx services/did-issuer/test/openid4vp-redirect.test.ts && tsx services/did-issuer/test/statuslist-es256.test.ts && tsx services/did-issuer/test/openid4vp-jar.test.ts && tsx services/did-issuer/test/vct-taxonomy.test.ts && tsx services/did-issuer/test/cross-issuer-did-web.test.ts && tsx services/did-issuer/test/multi-credential-dcql.test.ts && tsx services/did-issuer/test/openid4vp-malformed-input.test.ts && tsx services/did-issuer/test/openid4vp-dcql-enforcement.test.ts && tsx services/did-issuer/test/openid4vp-revocation-check.test.ts",
 		"smoke": "tsx test/smoke.test.ts"
 	},
+	"dependencies": {
+		"tsx": "^4.19.0"
+	},
 	"devDependencies": {
 		"@types/node": "^22.0.0",
-		"tsx": "^4.19.0",
 		"typescript": "^5.6.0"
 	}
 }
