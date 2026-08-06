@@ -675,7 +675,15 @@ function learnerSubject(learnerId: string): string {
 	return `did:web:${ISSUER_HOST}:learners:${learnerId}`;
 }
 function minimalClaims(learnerId: string, vct: string): { claims: Record<string, unknown>; selectivelyDisclosable: string[] } {
-	return { claims: { name: learnerId, achievement: vct, issuedAt: new Date().toISOString() }, selectivelyDisclosable: ["name", "achievement"] };
+	return {
+		claims: {
+			name: "Mneurix Sovereign Credential Specialist",
+			learner_id: learnerId,
+			achievement: vct,
+			issuedAt: new Date().toISOString(),
+		},
+		selectivelyDisclosable: ["name", "achievement", "learner_id"],
+	};
 }
 /** Strip the `#dc-sd-jwt` format-suffix alias from a credential_configuration_id
  * to get the canonical vct (the credential endpoint returns the format matching
