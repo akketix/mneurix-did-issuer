@@ -922,13 +922,19 @@ app.post("/credentials", async (c) => {
 			// mismatch (nonce binding vs signature) is visible in the RUN logs.
 			let proofNonce: string | undefined;
 			let proofAlg: string | undefined;
+			let proofHeader: unknown = null;
+			let proofPayload: unknown = null;
 			try {
 				const parts = proofJwt.split(".");
-				const h = JSON.parse(Buffer.from(parts[0]!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { alg?: string };
-				const p = JSON.parse(Buffer.from(parts[1]!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { nonce?: string };
-				proofAlg = h.alg; proofNonce = p.nonce;
+				const h = JSON.parse(Buffer.from(parts[0]!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { alg?: string; jwk?: unknown; kid?: string };
+				const p = JSON.parse(Buffer.from(parts[1]!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { nonce?: string; cnf?: unknown; sub_jwk?: unknown; iss?: string; aud?: string };
+				proofAlg = h.alg; proofNonce = p.nonce; proofHeader = h; proofPayload = p;
 			} catch { /* malformed proof */ }
+			const hdrStr = JSON.stringify(proofHeader).slice(0, 400);
+			const payStr = JSON.stringify(proofPayload).slice(0, 500);
 			console.log(`credentials 401 proof-fail: expectedNonce=${cNonce?.slice(0, 10)} proofNonce=${proofNonce?.slice(0, 10)} proofAlg=${proofAlg}`);
+			console.log(`  proof header: ${hdrStr}`);
+			console.log(`  proof payload: ${payStr}`);
 			return jsonError(c, 401, "UNAUTHORIZED", "proof verification failed: invalid signature or nonce mismatch");
 		}
 		consumeCNonce(token); // single-use nonce
