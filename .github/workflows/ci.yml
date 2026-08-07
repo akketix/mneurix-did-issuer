@@ -15,7 +15,7 @@ permissions:
 jobs:
   build-test:
     name: Build + test + smoke
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -28,7 +28,7 @@ jobs:
       - run: npm test
   audit:
     name: Dependency audit (report-only)
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     continue-on-error: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -40,7 +40,7 @@ jobs:
       - run: npm audit --omit=dev --audit-level=high
   trivy:
     name: Trivy secret + config scan
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 10
     permissions:
       contents: read
